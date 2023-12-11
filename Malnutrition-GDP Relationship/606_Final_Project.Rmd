@@ -1,0 +1,198 @@
+---
+title: "The Relationship Between GDP and Deaths Due to Malnutrition"
+author: "Shaya Engelman"
+date: "12/06/2023"
+output: 
+  ioslides_presentation:
+    widescreen: true
+---
+
+```{r load-packages, include=FALSE}
+library(tidyverse)
+```
+
+## Abstract
+<small>
+This project explores the intricate connection between a country's Gross Domestic Product (GDP) and deaths resulting from malnutrition, focusing on how fluctuations in GDP impact malnutrition mortality. Using a fourth-degree polynomial regression model, our analysis reveals significant findings. All model terms demonstrate statistical significance (p < 0.001). The model's F-statistic of 798.2 and low p-value underscore its high significance. With an R-squared value of 0.3722, the model explains approximately 37% of the data's variability, consistent with the adjusted R-squared value. The quadratic model provides nuanced insights, enabling predictions about GDP changes on malnutrition death rates. Proactive measures like screenings and aid distribution can be strategically deployed based on these predictions. However, diminishing returns associated with increasing GDP highlight the complexity of this relationship. Acknowledging limitations, including potential overfitting and the influence of confounding variables, this study offers valuable insights into the intricate interplay between GDP and malnutrition-induced deaths, providing a foundation for informed decision-making and intervention strategies.
+</small>
+
+## Introduction
+
+Malnutrition is a major cause of death globally. This occurs both in developing countries where there are many cases of protein-calorie malnutrition among the entire population as a result of lack of access to food, low income, and poor healthcare. Marasmus,in particular is one kind of protein-calorie malnutrition that is seen among children and infants in these developing countries. In developed countries we see this playing out with the geriatric population, particularly in rehabs and nursing homes. However, there is a huge discrepancy between the total amounts of death caused by malnutrition in these different groups of countries.
+
+### **What is the relationship between the GDP of a country and its deaths due to malnutrition? And how do changes in GDP affect malnutrition deaths?**
+
+## Data Overview
+
+The gathered data provides information about each country, including its GDP per capita and the total number of malnutrition-induced deaths in thousands, spanning the years from 1990 to 2019.
+
+
+```{r echo=FALSE}
+url <- 'https://raw.githubusercontent.com/Shayaeng/Data606/main/Final%20Project/malnutrition-death-rate-vs-gdp-per-capita.csv'
+gdp_malnutrition <- read.csv(url)
+colnames(gdp_malnutrition)[colnames(gdp_malnutrition) 
+                             == "GDP_per_capita_PPP_.2017."] <- "GDP"
+colnames(gdp_malnutrition)[colnames(gdp_malnutrition) 
+                             == "Deaths_Protein.energy.malnutrition"] <- "Deaths"
+
+gdp_malnutrition <- gdp_malnutrition[complete.cases(gdp_malnutrition), ]
+```
+```{r}
+head(gdp_malnutrition)
+```
+
+## Relationship between GDP and Deaths due to Malnutrition
+
+```{r echo=FALSE}
+ggplot(gdp_malnutrition, aes(x = GDP, y = Deaths)) +
+  geom_point(pch = 19) +
+  labs(x = "Gross Domestic Product",
+       y = "Deaths due to Malnutrition")
+```
+
+---
+
+```{r echo=FALSE}
+ggplot(gdp_malnutrition, aes(x = GDP, y = Deaths)) +
+  geom_point(pch = 19) +
+  geom_smooth(method = "lm", se = FALSE, col = "red") +
+  labs(x = "Gross Domestic Product",
+       y = "Deaths due to Malnutrition")
+```
+
+## Next Steps
+
+The data suggests a need for a quadratic model, but determining the appropriate degree for the quadratic model is challenging. While higher degrees improve the fit to the data, there's also an increased risk of overfitting. Creating a loess model and applying it to the data can help reveal the expected model shape.
+```{r echo=FALSE}
+loess_model <- loess(Deaths ~ GDP, data = gdp_malnutrition)
+print(loess_model)
+```
+
+------------------------------------------------------------------------
+
+```{r}
+ggplot(gdp_malnutrition, aes(x = GDP, y = Deaths)) +
+  geom_point(pch = 19) +
+  geom_smooth(method = "loess", se = FALSE, col = "blue")
+```
+
+## The Model
+
+After creating models ranging from the second to the tenth degree, the fourth degree model most closely approximated the loess line. 
+
+```{r echo=FALSE}
+ggplot(gdp_malnutrition, aes(x = GDP, y = Deaths)) +
+  geom_point(pch = 19) +
+  geom_smooth(method = "lm", formula = y ~ poly(x, 4), se = FALSE, col = "red")
+```
+
+---
+```{r echo=FALSE}
+poly_model <- lm(Deaths ~ poly(GDP, 4), data = gdp_malnutrition)
+summary(poly_model)
+```
+## Findings
+In our exploration of the relationship between a country's GDP and malnutrition-induced deaths, we used a polynomial regression model with a degree of 4. The key findings are as follows:
+
+- All the terms in this model have p-values less than 0.001, implying statistical significance.
+- The model has a F-statistic of 798.2 and an extremely low p-value, indicating a highly significant model.
+- The model has an R-squared value of 0.3722 which means it explains around 37% of the variability of the data.   This holds true when factoring in the adjusted R-squared value
+
+## Conclusion
+The relationship between a country's GDP and its malnutrition deaths is extremely complex, yet exists. The above quadratic model seems to help give a nuanced understanding of that relationship and helps predict how changes in GDP can impact the malnutrition death rate. By being able to predict a country's malnutrition rate, preventative measures can be taken, like screenings and sending aid, to help reduce deaths. Due to the quadratic nature of the relationship, raising the GDP of a country will have diminishing returns, in regards to lowering malnutrition death rates, the higher the GDP is.
+
+## Limitations
+- The use of a polynomial regression model with a degree of 4 introduces complexity, and the risk of overfitting should be carefully considered
+- Our analysis primarily focuses on the relationship between GDP and malnutrition deaths, neglecting potential confounding variables. Omitted variables, such as healthcare infrastructure or socio-cultural factors, may impact malnutrition outcomes.
+- The data spans a specific timeframe (1990 to 2019), limiting our ability to capture potential changes in the relationship over time. Economic and health dynamics can evolve, and our model might not account for these shifts adequately.
+- The reliability of our conclusions is contingent upon the quality and accuracy of the data. Incomplete or inaccurate data regarding GDP or malnutrition deaths could introduce bias into our analysis.
+
+## Appendix
+
+Exploring a quadratic model with a fourth degree of complexity raises concerns about overfitting, given its intricacy. Before committing to the quadratic model, an evaluation was conducted using a linear logarithmic model. Although the linear logarithmic model demonstrated reasonable accuracy, it did not outperform the quadratic model. The details of the log model are presented here for reference.
+
+---
+
+```{r echo=FALSE}
+gdp_malnutrition$log_Deaths <- log(gdp_malnutrition$Deaths)
+
+linear_model_log <- lm(log_Deaths ~ GDP, data = gdp_malnutrition)
+summary(linear_model_log)
+```
+
+---
+
+```{r echo=FALSE}
+linear_model_log <- lm(log_Deaths ~ GDP, data = gdp_malnutrition)
+
+# Create a new data frame for the fitted values
+fitted_data <- data.frame(GDP = gdp_malnutrition$GDP, log_Deaths = fitted(linear_model_log))
+
+# Create the ggplot
+ggplot(gdp_malnutrition, aes(x = GDP, y = log_Deaths)) +
+  geom_point(pch = 19) +  # Scatterplot points
+  geom_line(data = fitted_data, aes(x = GDP, y = log_Deaths), color = "red") +  # Linear model line
+  labs(x = "Gross Domestic Product",
+       y = "Log of Deaths due to Malnutrition",
+       title = "Relationship between GDP and Log of Deaths due to Malnutrition")
+```
+
+---
+
+```{r}
+set.seed(1125)
+
+n <- nrow(gdp_malnutrition)
+train_index <- sample(1:n, 0.8 * n)
+
+train_data <- gdp_malnutrition[train_index, ]
+test_data <- gdp_malnutrition[-train_index, ]
+
+train_model_log <- lm(log(Deaths) ~ GDP, data = train_data)
+train_poly_model <- lm(Deaths ~ poly(GDP, 4), data = train_data)
+log_predictions <- exp(predict(train_model_log, newdata = test_data))
+poly_predictions <- predict(train_poly_model, newdata = test_data)
+
+predictions_df <- data.frame(
+  Actual_Deaths = test_data$Deaths,
+  Log_Model_Predictions = log_predictions,
+  Poly_Model_Predictions = poly_predictions
+)
+predictions_df$Residuals_Log_Model <- predictions_df$Actual_Deaths - predictions_df$Log_Model_Predictions
+predictions_df$Residuals_Poly_Model <- predictions_df$Actual_Deaths - predictions_df$Poly_Model_Predictions
+```
+---
+```{r}
+mse_log <- mean(predictions_df$Residuals_Log_Model^2)
+mse_poly <- mean(predictions_df$Residuals_Poly_Model^2)
+
+rmse_log <- sqrt(mse_log)
+rmse_poly <- sqrt(mse_poly)
+
+mae_log <- mean(abs(predictions_df$Residuals_Log_Model))
+mae_poly <- mean(abs(predictions_df$Residuals_Poly_Model))
+
+cat("Logarithmic Model:\n", "RMSE:", rmse_log, "MAE:", mae_log, "\n")
+cat("Polynomial Model:\n", "RMSE:", rmse_poly, "MAE:", mae_poly, "\n")
+```
+---
+```{r echo=FALSE}
+ggplot(predictions_df, aes(x = Actual_Deaths)) +
+  geom_point(aes(y = Log_Model_Predictions), color = "blue", alpha = 0.7, size = 3) +
+  geom_point(aes(y = Poly_Model_Predictions), color = "red", alpha = 0.7, size = 3) +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "black", size = 1) +
+  labs(title = "Comparison of Actual vs. Predicted Deaths",
+       x = "Actual Deaths",
+       y = "Predicted Deaths") +
+  scale_color_manual(values = c("blue", "red"), name = "Models",
+                     labels = c("Logarithmic", "Polynomial")) +
+  theme_minimal()
+```
+
+## Sources
+
+http://ghdx.healthdata.org/gbd-results-tool
+
+https://datacatalog.worldbank.org/search/dataset/0037712/World-Development-Indicators
+
+https://ourworldindata.org/hunger-and-undernourishment#interactive-charts-on-hunger-and-undernourishment
