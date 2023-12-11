@@ -1,0 +1,58 @@
+---
+title: "Project 2"
+author: "Shaya Engelman"
+date: "2023-10-10"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(RCurl)
+library(dplyr)
+library(stringr)
+library(tidyverse)
+```
+For my first dataset I chose a file that contains participation and cost data for SNAP. The data is further divided by annual, state, and monthly levels categorized by persons participating, households participating, benefits provided, average monthly benefits per person and average monthly benefits per household. I am going to see if there is a relationship between the average amount per person and the total amount of participants. I found this information on data.world as an excel file that I downloaded and saved as a csv file to my GitHub repository.
+
+This information is meaningful to me as my wife is a dietitian and I often hear about the major impact finances has on people's nutrition decisions.
+```{r}
+snap <- read.csv("https://raw.githubusercontent.com/Shayaeng/Data607/main/Project2/SNAPsummary.csv")
+
+```
+
+First I will name these columns with the proper names and get rid of the extra rows
+
+```{r}
+#snap <- snap %>% mutate_all(~na_if(., ""))
+
+colnames(snap) <- snap[2, ]
+
+
+new_column_names <- snap[3, 2:4]
+
+new_column_names <- gsub("-", "", new_column_names)
+new_column_names <- paste0("(", str_trim(new_column_names), ")")
+
+colnames(snap)[2:4] <- paste0(colnames(snap)[2:4], new_column_names)
+
+snap <- snap |>
+  slice(-(1:3))
+
+```
+
+```{r}
+
+snap$`Average Participation(Thousands)` <- as.numeric(gsub(",", "", snap$`Average Participation(Thousands)`))
+snap$`Average Benefit Per Person(Dollars)` <- as.numeric(gsub(",", "", snap$`Average Benefit Per Person(Dollars)`))
+
+ggplot(data = snap, mapping = aes(x = `Average Participation(Thousands)`, y = `Average Benefit Per Person(Dollars)`)) +
+  geom_point() +
+  scale_x_continuous(breaks = seq(0, 50000, by = 5000)) + 
+  scale_y_continuous(breaks = seq(0, 150, by = 20)) + 
+  labs(title = "Scatter Plot with Specified Axis Intervals")
+```
+
+The above data seems to show a positive correlation between the amount of participants in the SNAP program and the amount each participant receives.
