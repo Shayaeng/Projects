@@ -1,0 +1,122 @@
+---
+title: "Movie Rankings"
+author: "Shaya Engelman"
+date: "2023-09-10"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(RMySQL)
+library(tidyverse)
+library(dotenv)
+library(knitr)
+```
+
+## Movie Rankings
+
+Ranking movies can be an extremely hard task. Factors people like are extremely subjective and can vary tremendously from one person to another. Additionally, even factors agreed upon by society as a whole can change over time. This means that in some instances the best ways to get an accurate comparison between multiple movies would be to ask the same group of people what they thought of movies that were released relatively close to each other because their opinions likely have not changed too much.
+
+I asked 6 family members what their opinions are about 6 recent movies. Here are their answers:
+
+First lets, open a connection to a SQL database.
+
+```{r}
+# I will load my password into a .env file and add it to the gitignore
+dotenv::load_dot_env()
+password <- Sys.getenv("DATABASE_PASSWORD")
+
+localhost <- dbConnect(RMySQL::MySQL(),dbname='cuny_sps_msds',username='shayaeng',password=password, host='localhost',port=3306)
+knitr::opts_chunk$set(connection = "localhost")
+
+```
+
+Next, we'll create the table
+
+```{sql connection=localhost}
+CREATE TABLE `movie_rankings` (
+  `id` int NOT NULL AUTO_INCREMENT,
+  `movie_name` varchar(100) DEFAULT NULL,
+  `score_1` int DEFAULT NULL,
+  `score_2` int DEFAULT NULL,
+  `score_3` int DEFAULT NULL,
+  `score_4` int DEFAULT NULL,
+  `score_5` int DEFAULT NULL,
+  PRIMARY KEY (`id`)
+);
+```
+
+Now, I will add the rankings into the table
+
+```{sql connection=localhost}
+INSERT INTO movie_rankings (`movie_name`,`score_1`,`score_2`,`score_3`,`score_4`,`score_5`) VALUES ('Avatar: The Way of Water',1,2,0,3,0), ('Oppenheimer',0,1,1,3,1), ('Barbie',4,1,1,0,0), ('Meg 2',1,4,1,0,0), ('Sound of Freedom',1,1,0,2,2), ('Top Gun: Maverick',0,1,2,0,3);
+```
+
+Now I have a SQL table with the results of the survey. I can now read it into the R project and manipulate the data using R.
+
+```{R}
+movies <- as_tibble(DBI::dbReadTable(localhost,"movie_rankings"))
+movies %>% slice(sample(1:10000,5))
+```
+
+Once I have our table saved to the current environment, I will close our connection to the SQL database.
+
+```{r disconnect}
+dbDisconnect (localhost) 
+```
+
+Now I'lllook at the table.
+
+```{r print-table}
+movies <- movies %>% rename('Movie' = movie_name, '1 Star' = score_1, '2 Stars' = score_2, '3 Stars' = score_3, '4 Stars' = score_4, '5 Stars' = score_5)
+# add the total score
+factors <- c(`1 Star` = 1, `2 Stars` = 2, `3 Stars` = 3, `4 Stars` = 4, `5 Stars` = 5)
+
+movies <- movies %>% mutate(Total = rowSums(across(c(`1 Star`, `2 Stars`, `3 Stars`, `4 Stars`, `5 Stars`), ~ . * factors[cur_column()])))
+kable(movies)
+```
+
+## Different collection methods
+
+I collected this information by creating polls on a family WhatsApp chat. I didn't include any criteria for rankings. I just asked them to rate each movie on a scale of 1 to 5, with 5 being most liked. Factors that make one person either like or dislike a movie can vary tremendously from person to person. This means that the data can be flawed which severely limits the ways we can utilize this data.
+
+A better way to have gathered this data would have been by asking people to rate different aspects of the movie and then combining those aspects into an overall ranking. For example, I could have prompted people to rate the cinematography on a scale of one to ten. Same for the writing, directing, acting, and story line of the movies. After getting a grade for all of the various factors involved a successful movie, I would then combine the grade for one overall ranking. This would make the rating a lot more objective and much more helpful for other people.
+
+By doing it this way, I would have the ability to publish the individual metrics as well. This can be useful for someone looking for a movie that excels in one of those factors even if it is mediocre in others.
+
+The drawback of this is that it obviously takes the person being asked to rate the movie a lot longer to answer and can be harder for that person to do as well. This can lead to having a harder time getting people to agree to give you this information, leading to no ranking at all.
+
+## Handling Missing Data
+
+Perhaps because of the simple question I asked, all six people answered about all six movies quite quickly (I also suspect that they mostly made stuff up, I mentioned that I don't really care if it's true or not and I think they took that to mean to answer about all the movies.). I myself however, have only watched two of them. I watched Top Gun: Maverick, and Avatar: The Way of Water. I would rank them both a 5/5.
+
+```{r add-my-rankings}
+
+# I will add my results
+movies[row.names(movies) == "1", "5 Stars"] <- movies[row.names(movies) == "1", "5 Stars"] + 1
+movies[row.names(movies) == "6", "5 Stars"] <- movies[row.names(movies) == "6", "5 Stars"] + 1
+
+# If this would be a very long table and hard to look through, I would convert the row names to the movie names and update the ranking that way using the following code
+#movies_df <- as.data.frame(movies)
+#rownames(movies_df) <- movies_df[, 2]
+#and then run the code using the new row names
+```
+
+Now that I've added my own rankings to the table we have some rows with more ratings than others. Before adding these I simply added all the rankings together by giving them all a value and adding them together to see the total highest score. Now that there is an uneven amount of ratings, that method wouldn't work. Instead, we can find the average rating to try to get an unbiased ranking.
+
+```{r test}
+#first we need the total amount of ratings
+movies <- movies %>%
+  mutate(Ratings = as.numeric(`1 Star`) + as.numeric(`2 Stars`) + as.numeric(`3 Stars`) + as.numeric(`4 Stars`) + as.numeric(`5 Stars`))
+#update the total score
+movies <- movies %>% mutate(Total = rowSums(across(c(`1 Star`, `2 Stars`, `3 Stars`, `4 Stars`, `5 Stars`), ~ . * factors[cur_column()])))
+#now we can create an average
+movies <- movies %>% mutate(Average = Total / Ratings)
+```
+
+We now have a table showing a ranking for six movies with different amounts of ratings for some of them.
+
+```{r print}
+movies_sorted <- movies %>% arrange(desc(Average))
+kable(movies_sorted)
+```
