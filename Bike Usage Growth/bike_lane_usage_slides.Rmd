@@ -1,0 +1,481 @@
+---
+title: "Connecting the Dots: Exploring the Linear Dynamics of Bike Lane Expansion and Increased Biking in Urban Environments"
+author: "Shaya Engelman"
+date: "2023-12-12"
+output:
+  ioslides_presentation: default
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction 
+
+In many big cities, traffic is a big headache. Too many cars not only make the air dirty but also mess with our climate. Especially in busy places like New York City, it takes a lot of time to travel short distances because of all the traffic. One way to tackle these problems is by encouraging people to use bicycles for transportation. **Building more bike lanes is an obvious step to make people want to bike more.**
+
+$\color{red}{\text{However}}$, it's not that simple. Creating new bike lanes costs money, and it means taking away space from pedestrians and cars. To decide when and where to build these lanes, we need to answer an important question: <span style="color:blue">How does building more bike lanes impact the number of people who choose to bike?</span>
+
+This project is all about figuring out if making more bike lanes really helps get more people on bikes. By looking at the data, we want to help decision-makers understand if building bike lanes is a good idea—balancing the benefits of more biking with the costs of construction and changes to the city.
+
+
+```{r warning=FALSE, include=FALSE}
+library(tidyverse)
+library(httr)
+library(pdftools)
+library(gt)
+```
+
+
+## Data Collection
+
+New York City has stations in various spots along bike routes in Manhattan where data on biker usage is collected. The data collected includes the location, year, number of people passing by that are non-cyclists, number of cyclists, total number of passerby and various other points of data. This data was retrieved using the API of the NYC OpenData program.
+
+Additionally, I loaded data with the total amount of bike lane miles added per borough in NYC. This data was extracted from a pdf found on the NYC DOT's webpage using the pdftools package.
+
+```{r include=FALSE}
+url <- "https://data.cityofnewyork.us/resource/qfs9-xn8t.csv"
+app_token <- Sys.getenv("API_KEY")
+
+response <- GET(url, query = list("$limit" = 5000, "$$app_token" = app_token))
+
+data <- read.csv(text = content(response, "text"))
+```
+
+```{r include=FALSE}
+url2 <- "https://data.cityofnewyork.us/resource/mfmf-gtvc.csv"
+
+response2 <- GET(url2, query = list("$limit" = 5000, "$$app_token" = app_token))
+
+data2 <- read.csv(text = content(response2, "text"))
+```
+
+```{r include=FALSE}
+data2 <- data2 %>%
+    rename(totalusers = alluservolume, cyclistvolume = cyclists_all)
+
+merged_data <- bind_rows(data, data2)
+```
+
+```{r include=FALSE}
+pdf_text_content <- pdf_text("https://www.nyc.gov/html/dot/downloads/pdf/bike-route-details.pdf")
+first_table_str <- str_extract(pdf_text_content, "(?s)(Bronx).*?(?=Miles by Type)")
+
+first_table_df <- read_delim(first_table_str, delim = "\\s+", col_names = FALSE) %>%
+  separate(col = X1, into = c("Borough", "2006", "2007", "2008", "2009", "2010", "2011", "2012", "2013", "2014", "2015", "2016", "Total"), sep = "\\s{2,}") %>%
+  drop_na()
+```
+---
+```{r, results='asis', echo=FALSE, warning=FALSE}
+merged_data %>%
+  slice_head(n = 4) %>%
+  select(typeoftime, location, year, totalusers, noncyc_otheruser, cyclistvolume) %>%
+  gt() %>%
+  tab_spanner(
+    label = "Manhattan Bike Use",
+    columns = vars(typeoftime, location, year, totalusers, noncyc_otheruser, cyclistvolume)
+  ) %>%
+  tab_style(
+    style = cell_fill(color = "lightblue"),
+    locations = cells_column_spanners(spanners = "Manhattan Bike Use")
+  ) %>%
+  tab_options(table.width = "100%")
+```
+```{r, results='asis', echo=FALSE, warning=FALSE}
+first_table_df %>%
+  select(Borough, `2006`, `2007`, `2015`, `2016`, Total) %>%
+  slice_head(n = 5) %>%
+  gt() %>%
+  tab_spanner(
+    label = "Bike Lane Miles",
+    columns = vars(Borough, `2006`, `2007`, `2015`, `2016`, Total)
+  ) %>%
+  tab_style(
+    style = cell_fill(color = "lightblue"),
+    locations = cells_column_spanners(spanners = "Bike Lane Miles")
+  ) %>%
+  tab_options(table.width = "100%",)
+```
+
+## Data Transformation and Cleaning
+In order to work with the data collected above, it was necessary to tidy and convert it to other formatting for a better analysis.
+
+Using a variety of tidying methods, including grouping, summarizing, mutating and pivoting. I created a new dataframe with the combined yearly amount of passerbys and bicycle users for those Manhattan collection points.
+
+I then created a new dataframe with the Manhattan subset of the total amount of bike lanes added and combined it with the Manhattan bike usage data to create one dataframe.
+```{r include=FALSE}
+total_cyclist_per_year <- merged_data %>%
+  group_by(year) %>%
+  summarize(total_cyclists = sum(cyclistvolume, na.rm = TRUE),
+            total_users = sum(totalusers, na.rm = TRUE)) %>%
+  mutate(cyclist_percentage = total_cyclists / total_users)
+```
+
+```{r include=FALSE}
+pivoted_data <- first_table_df %>%
+  pivot_longer(cols = starts_with("20"), names_to = "Year", values_to = "miles_added") %>%
+  mutate(Year = as.numeric(gsub("X", "", Year)))
+
+pivoted_data$miles_added <- as.numeric(pivoted_data$miles_added)
+```
+
+```{r include=FALSE}
+manhattan_data <- pivoted_data %>%
+  filter(Borough == "Manhattan") %>%
+  group_by(Year) %>%
+  summarize(miles_added = sum(miles_added, na.rm = TRUE))
+```
+
+```{r include=FALSE}
+colnames(manhattan_data)[colnames(manhattan_data) == "Year"] <- "year"
+
+manhattan_result_data <- left_join(total_cyclist_per_year, manhattan_data, by = "year")
+
+manhattan_result_data <- manhattan_result_data %>%
+  mutate(total_added = cumsum(replace_na(miles_added, 0)))
+```
+---
+
+```{r echo=FALSE}
+manhattan_result_data %>%
+  gt() %>%
+  tab_header(
+    title = "Bicycle Use",
+    subtitle = "Manhattan Collection Points"
+  ) %>%
+  tab_style(
+    style = cell_fill(color = "lightgray"),
+    locations = cells_body(rows = seq(1, nrow(manhattan_result_data), by = 2))
+  ) %>%
+  cols_width(
+    everything() ~ px(100)  # Adjust the value as needed
+  ) %>%
+  tab_style(
+    style = cell_fill(color = "darkblue"),
+    locations = cells_column_labels()
+  ) %>%
+  tab_style(
+    style = cell_text(color = "white"),
+    locations = cells_column_labels()
+  ) %>%
+  cols_label(
+    year = "Year",
+    total_cyclists = "Total\nCyclists",
+    total_users = "Total\nUsers",
+    cyclist_percentage = "Cyclist-\nPercentage",
+    miles_added = "Miles\nAdded",
+    total_added = "Total\nAdded"
+  )
+```
+
+## Data Analysis
+After tidying our data, we’re ready to analyze it. 
+
+We’re interested in whether there’s a relationship between the miles of bike lanes added and the number of bicycle riders. To do this, I used a linear regression model. This model helps us understand how these two variables interact. I plotted the data and the regression line to visualize this relationship. Additionally, I printed a summary of the regression model to get more details about it. 
+
+---
+
+```{r, results='asis', echo=FALSE, message=FALSE, fig.height=4, fig.width=6, fig.align='center'}
+model1 <- lm(total_cyclists ~ total_added, data = manhattan_result_data)
+
+summary_model1 <- summary(model1)
+
+coefficients <- summary_model1$coefficients
+
+df <- as.data.frame(coefficients)
+
+rsq <- summary_model1$r.squared
+fstat <- summary_model1$fstatistic[1]
+
+df2 <- data.frame(
+  `Estimate` = c("R-squared"),
+  `Std. Error` = c(rsq),
+  `t value` = c("F-statistic"),
+  `Pr(>|t|)` = c(fstat),
+  row.names = c("R-squared, F-statistic")
+)
+
+colnames(df2) <- c("Estimate", "Std. Error", "t value", "Pr(>|t|)")
+
+df <- rbind(df, df2)
+
+gt(df) %>%
+  tab_header(
+    title = "Summary of Linear Regression Model"
+  ) %>%
+  cols_label(
+    Estimate = "Estimate",
+    `Std. Error` = "Standard Error",
+    `t value` = "t Value",
+    `Pr(>|t|)` = "Pr(>|t|)"
+  ) %>%
+  tab_style(
+    style = cell_fill(color = "yellow"),
+    locations = cells_body(rows = nrow(df))
+  )
+
+ggplot(manhattan_result_data, aes(x = total_added, y = total_cyclists)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = F, color = "red") +
+  labs(x = "Total Miles", y = "Total Cyclists")
+```
+
+## Model Analysis
+
+The presented model exhibits a remarkably strong correlation, as evidenced by an R-squared value of 0.9345. This implies that the model accounts for over 93% of the variance, and the high F-statistics and low p-value underscore its statistical significance. Nevertheless, upon deeper reflection, I discerned a flaw in my analysis that prompted a reconsideration of the model. I realized that the model overlooked certain factors, such as the increase in data collection points which artificially increased the ridership during the later years. Additionally, the model failed to consider population growth, a crucial factor influencing the increase in the number of bikers. 
+
+To solve this issue, I recalculated the model using the rider percentage instead of the total amount of riders.
+Below is the new model with the new line plot. 
+
+---
+```{r, results='asis', echo=FALSE, message=FALSE, fig.height=4, fig.width=6, fig.align='center'}
+model2 <- lm(cyclist_percentage ~ total_added, data = manhattan_result_data)
+
+summary_model2 <- summary(model2)
+
+coefficients <- summary_model2$coefficients
+
+df <- as.data.frame(coefficients)
+
+rsq <- summary_model2$r.squared
+fstat <- summary_model2$fstatistic[1]
+
+df2 <- data.frame(
+  `Estimate` = c("R-squared"),
+  `Std. Error` = c(rsq),
+  `t value` = c("F-statistic"),
+  `Pr(>|t|)` = c(fstat),
+  row.names = c("R-squared, F-statistic")
+)
+
+colnames(df2) <- c("Estimate", "Std. Error", "t value", "Pr(>|t|)")
+
+df <- rbind(df, df2)
+
+gt(df) %>%
+  tab_header(
+    title = "Summary of Linear Regression Model"
+  ) %>%
+  cols_label(
+    Estimate = "Estimate",
+    `Std. Error` = "Standard Error",
+    `t value` = "t Value",
+    `Pr(>|t|)` = "Pr(>|t|)"
+  ) %>%
+  tab_style(
+    style = cell_fill(color = "yellow"),
+    locations = cells_body(rows = nrow(df))
+  )
+
+ggplot(manhattan_result_data, aes(x = total_added, y = cyclist_percentage)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE, color = "blue") +
+  labs(title = "Scatterplot with Regression Line",
+       x = "Total Added",
+       y = "Cyclist Percentage")
+```
+
+## Model Analysis
+
+The revised model proved to be unsatisfactory, displaying notably low significance across various statistical measures. Furthermore, it indicated a counterintuitive and illogical negative relationship, further undermining its credibility.
+Upon further reflection, I realized another flaw in this analysis; the collection points were static and did not change from year to year. While more bike lanes may have been added, the collection points remained in the same place, not necessarily picking up on the added cyclists using the new lanes. I decided to collect more data to rerun the analysis for a more accurate model. 
+
+## New Data Preparation
+
+The New York City Department of Transportation publishes total amount of bike riders who cross the 5 East River bridges each year. While these collection points are static too, they do not have the same issue as described above because they are major commuting routes and should correlate with a proportional increase in bicycle riders. 
+
+First, I loaded the pdf and again used pdftools to extract the years 2006-2016. Next, similar to what I did previously, I generated a dataframe containing the total added miles, but this time encompassing all five boroughs of New York City. Finally, again, I combined the two new dataframes to include the collected bicycle usage per year alongside the total amount of bike lanes added per year. Since the new data didn't include a non-bicycle count, I added NYC population data in order to account to grwoth in bike usage only due to growth in NYC population.
+```{r echo=FALSE}
+pdf_text_content_2 <- pdf_text("https://www.nyc.gov/html/dot/downloads/pdf/east-river-bridge-counts-24hrs-1980-2023.pdf")
+
+lines_text <- strsplit(pdf_text_content_2, "\n")[[1]]
+years <- 2006:2016
+
+matching_indices <- unlist(sapply(years, function(year) grep(paste0("^\\s*", year), lines_text)))
+extracted_lines <- lines_text[sort(matching_indices)]
+
+df <- do.call(rbind, strsplit(extracted_lines, "\\s{2,}"))
+
+df <- df[,-1]
+
+colnames(df) <- c("year", "brooklyn_bridge", "manhattan_bridge", "williamsburg_bridge", "ed_koch_queensboro_bridge", "total")
+
+df <- data.frame(df)
+
+df$year <- trimws(df$year)
+
+df$year <- gsub("[^0-9]", "", df$year)
+
+df$year <- as.numeric(df$year)
+
+```
+
+```{r echo=FALSE}
+grouped_data <- pivoted_data %>%
+  group_by(Year) %>%
+  summarize(miles_added = sum(miles_added, na.rm = TRUE))
+```
+
+```{r echo=FALSE}
+result_data <- left_join(df, grouped_data, by = c("year" = "Year"))
+
+result_data <- result_data %>%
+  mutate(total_miles = cumsum(replace_na(miles_added, 0)))
+
+result_data$total <- as.numeric(gsub(",", "", result_data$total))
+result_data$total_miles <- as.numeric(gsub(",", "", result_data$total_miles))
+```
+
+```{r echo=FALSE}
+nyc_population <- read.csv("https://raw.githubusercontent.com/Shayaeng/Data607/main/Final%20Project/New%20York%20City-population-2023-12-10%20(1).csv")
+
+nyc_population <- nyc_population %>%
+  mutate(Year = year(mdy(date)))
+
+result_data <- left_join(result_data, select(nyc_population, Year, Population), by = c("year" = "Year"))
+```
+
+---
+```{r echo=FALSE}
+result_data %>%
+  gt() %>%
+  tab_header(
+    title = "Bicycle Use",
+    subtitle = "East River Bridges"
+  ) %>%
+  tab_style(
+    style = cell_fill(color = "lightgray"),
+    locations = cells_body(rows = seq(1, nrow(result_data), by = 2))
+  ) %>%
+  cols_width(
+    everything() ~ px(80)
+  ) %>%
+  tab_style(
+    style = cell_fill(color = "darkblue"),
+    locations = cells_column_labels()
+  ) %>%
+  tab_style(
+    style = cell_text(color = "white", size = px(12)),
+    locations = cells_column_labels()
+  ) %>%
+  cols_label(
+    year = "Year",
+    brooklyn_bridge = "Brooklyn\nBridge",
+    manhattan_bridge = "Manhattan\nBridge",
+    williamsburg_bridge = "Williamsburg\nBridge",
+    ed_koch_queensboro_bridge = "Ed Koch\nQueensboro\nBridge",
+    total = "Total",
+    miles_added = "Miles\nAdded",
+    total_miles = "Total\nMiles",
+    Population = "NYC\nPopulation"
+  )
+```
+
+## New Analysis
+
+With the new data tidied, I once again used a linear regression model to analyze it. This model was plotted over a scatterplot of the data for visual representation. A summary of this model was also generated, similar to the previous analysis.
+
+We are looking fir the relationship between building bike lanes and growth in bicycle users.
+
+---
+```{r, results='asis', echo=FALSE, message=FALSE, fig.height=4, fig.width=6, fig.align='center'}
+result_data <- result_data %>%
+  mutate(total_percentage = total / Population)
+
+model4 <- lm(total_percentage ~ total_miles, data = result_data)
+
+summary_model4 <- summary(model4)
+
+coefficients <- summary_model4$coefficients
+
+df <- as.data.frame(coefficients)
+
+rsq <- summary_model4$r.squared
+fstat <- summary_model4$fstatistic[1]
+
+df2 <- data.frame(
+  `Estimate` = c("R-squared"),
+  `Std. Error` = c(rsq),
+  `t value` = c("F-statistic"),
+  `Pr(>|t|)` = c(fstat),
+  row.names = c("R-squared, F-statistic")
+)
+
+colnames(df2) <- c("Estimate", "Std. Error", "t value", "Pr(>|t|)")
+
+df <- rbind(df, df2)
+
+gt(df) %>%
+  tab_header(
+    title = "Summary of Linear Regression Model"
+  ) %>%
+  cols_label(
+    Estimate = "Estimate",
+    `Std. Error` = "Standard Error",
+    `t value` = "t Value",
+    `Pr(>|t|)` = "Pr(>|t|)"
+  ) %>%
+  tab_style(
+    style = cell_fill(color = "yellow"),
+    locations = cells_body(rows = nrow(df))
+  )
+
+ggplot(result_data, aes(x = total_miles, y = total_percentage)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE, color = "red") +
+  labs(x = "Total Miles", y = "Total Percentage", title = "Scatterplot with Regression Line")
+```
+
+
+## Results
+
+Our linear regression analysis reveals a positive correlation between the expansion of bike paths and increased bike usage as a means of transportation. The model’s significant coefficients and high R-squared value (0.9143) suggest that bike path expansion explains approximately 91.43% of the variability in bike usage. Thus, we infer a proportional relationship between bike path expansion and bike usage in the studied urban area. After addressing previous analysis flaws, we maintain a statistically significant relationship between bike path expansion and increased bike usage, leading to a higher level of confidence in this data as a reliable reflection of the relationship in the studied context.
+
+## Limitations | Correlation Does Not Equal Causation {.smaller}
+<div class="columns-2">
+- Focus on one metric: total miles of bike paths.
+- Excludes various factors influencing bike usage.
+- Social considerations: safety perceptions, community engagement, local policies.
+- Outcomes influenced by specific time frame.
+- Variations in infrastructure expansion may be underrepresented.
+- Regional specificity: correlation observed is specific to NYC.
+- Caution when generalizing to different geographic or cultural contexts.
+- Social dynamics: community preferences, socioeconomic disparities, cultural attitudes.
+- Inherently complex and challenging to quantify comprehensively.
+- Study provides insights into bike path expansion and increased bike usage correlation.
+
+</div>
+
+## Conclusion {.smaller}
+
+In summary, our analysis confirms a positive correlation between expanding bike paths and increased bike usage in our urban area. Robust statistical evidence, including significant coefficients, a high R-squared value, and a compelling F-statistic, strongly supports this relationship. However, acknowledging potential drawbacks is essential.
+
+Firstly, cost considerations are significant. Implementing expansive bike infrastructure can be financially burdensome, requiring investments in planning, construction, and maintenance. These costs may pose challenges for municipalities with constrained budgets and competing urban development priorities.
+
+Additionally, allocating space for bike lanes may impact vehicular traffic flow, necessitating careful urban planning. The trade-off between accommodating cyclists and maintaining efficient transportation networks for motorists requires a balanced approach. Repurposing space for bike lanes may also limit parking availability, especially in areas where parking is already contentious.
+
+While our model addresses previous flaws, the correlation observed doesn't definitively establish causation. Unaccounted factors like local policies, cultural attitudes, and safety perceptions could influence this relationship. Despite these considerations, our findings underscore the strategic importance of urban planning and bike infrastructure development for fostering sustainable transportation habits. A well-balanced approach, weighing benefits against drawbacks, remains pivotal for creating an inclusive and sustainable urban environment.
+
+## Sources {.smaller}
+
+Manhattan collection points:
+
+https://data.cityofnewyork.us/resource/qfs9-xn8t.csv
+
+https://data.cityofnewyork.us/resource/mfmf-gtvc.csv
+
+NYC Bike Lanes Built:
+
+https://www.nyc.gov/html/dot/downloads/pdf/bike-route-details.pdf
+
+
+NYC Bike Use:
+
+https://www.nyc.gov/html/dot/downloads/pdf/east-river-bridge-counts-24hrs-1980-2023.pdf
+
+NYC Population Data:
+
+<a href='https://www.macrotrends.net/cities/23083/new-york-city/population'>New York City Metro Area Population 1950-2023</a>. www.macrotrends.net. Retrieved 2023-12-10.
+
+
