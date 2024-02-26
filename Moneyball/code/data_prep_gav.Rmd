@@ -1,0 +1,439 @@
+---
+title: "DATA 621 Assignment 1 - Data Prep"
+author: "Gavriel Steinmetz-Silber"
+date: "2024-02-10"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## STEPS
+
+
+Step 1: See if anything looks really wrong 
+Step 2: Remove columns with too many NAs
+Step 3: Impute values for the other columns with NAs
+Step 4: Check that predictor variables are normal + have linear relationship with Wins. Perform Box-Cox if not
+
+
+
+#### See if anything looks really wrong and address
+
+In this section, I'll take a look at some summary statistics and use common sense to identify and address errors.
+
+```{r}
+library(tidyverse)
+training = read_csv("https://raw.githubusercontent.com/gsteinmetzsilber/DATA621/main/Assignment1/moneyball-training-data.csv")
+
+summary(training)
+```
+
+We would like to be somewhat conservative and so we'll err on the side of caution (not deleting as possible). Let's go column by column:
+
+TARGET_WINS: It would be odd indeed if a team won 0 games. In fact, no team has ever won fewer than 20 nor greater than 116 games. This column will ultimately be our dependent variable, so errors here are troubling. We will delete these rows altogether:
+
+```{r}
+training = training %>% 
+  filter(TARGET_WINS >= 20 & TARGET_WINS <= 116)
+```
+
+For the predictor variables, we'll change implausible values to NAs for now so that we'll be able to make more informed decisions about columns with NA values (e.g. remove the column or impute values). We'll utilize https://www.baseball-almanac.com/ to determine what is and is not implausible. 
+
+TEAM_BATTING_H: 
+```{r}
+summary(training$TEAM_BATTING_H)
+```
+
+I couldn't find the historical minimum, but 992 is plausible. 1,783 is the actual maximum:
+
+```{r}
+training = training %>%
+  mutate(TEAM_BATTING_H = replace(TEAM_BATTING_H, TEAM_BATTING_H > 1783, NA))
+```
+
+TEAM_BATTING_2B: There have never been fewer than 116 nor greater than 373. 
+
+```{r}
+training = training %>% 
+  mutate(TEAM_BATTING_2B = replace(TEAM_BATTING_2B, TEAM_BATTING_2B < 116 | TEAM_BATTING_2B > 373, NA))
+```
+
+TEAM_BATTING_3B: There have never been fewer than 5 nor more than 153.
+
+```{r}
+training = training %>% 
+  mutate(TEAM_BATTING_3B = replace(TEAM_BATTING_3B, TEAM_BATTING_3B < 5 | TEAM_BATTING_3B > 153, NA))
+```
+
+TEAM_BATTING_HR:There have never been fewer than 3 nor more than 307. 
+
+```{r}
+training = training %>% 
+  mutate(TEAM_BATTING_HR = replace(TEAM_BATTING_HR, TEAM_BATTING_HR < 3 | TEAM_BATTING_HR > 307, NA))
+```
+
+TEAM_BATTING_BB: There have never been fewer than 282 nor more than 835.
+
+```{r}
+training = training %>% 
+  mutate(TEAM_BATTING_BB = replace(TEAM_BATTING_BB, TEAM_BATTING_BB < 282 | TEAM_BATTING_HR > 835, NA))
+```
+
+TEAM_BATTING_SO: There have never been fewer than 308 nor more than 1,596.
+
+```{r}
+training = training %>% 
+  mutate(TEAM_BATTING_SO = replace(TEAM_BATTING_SO, TEAM_BATTING_SO < 308 | TEAM_BATTING_SO > 1596, NA))
+```
+
+TEAM_BASERUN_SB: There have never been fewer than 13 nor more than 581 (achieved by St. Louis of the American Association).
+
+```{r}
+training = training %>% 
+  mutate(TEAM_BASERUN_SB = replace(TEAM_BASERUN_SB, TEAM_BASERUN_SB < 13 | TEAM_BASERUN_SB > 581, NA))
+```
+
+TEAM_BASERUN_CS: There have never been fewer than 8 nor more than 185. 
+
+```{r}
+training = training %>% 
+  mutate(TEAM_BASERUN_CS = replace(TEAM_BASERUN_CS, TEAM_BASERUN_CS < 8 | TEAM_BASERUN_CS > 185, NA))
+```
+
+TEAM_BATTING_HBP: There have never been fewer than 5 nor more than 160.
+
+```{r}
+training = training %>% 
+  mutate(TEAM_BATTING_HBP = replace(TEAM_BATTING_HBP, TEAM_BATTING_HBP < 5 | TEAM_BATTING_HBP > 160, NA))
+```
+
+TEAM_PITCHING_H: I was unable to find historical figures for fewest and most hits allowed. The minimum of 1,137 seems a bit low but not outrageously so; in the spirit of erring on the side of caution we won't touch those numbers. However, the maximum of over 30,000 is totally implausible. In fact, 3,000 hits would mean an average of 18.5 hits in an 162-game season. This is incredibly high but at least plausible, so we'll make the adjustment accordingly, permitting a maximum of 3,000 hits allowed: 
+
+```{r}
+training = training %>% 
+  mutate(TEAM_PITCHING_H = replace(TEAM_PITCHING_H, TEAM_PITCHING_H > 3000, NA))
+```
+
+TEAM_PITCHING_HR: There have never been more than 305 home runs allowed in a season. I couldn't find a minimum, but let's say 3 is plausible (perhaps in a shortened season or in the dead ball era) if quite unrealistic:
+
+```{r}
+training = training %>% 
+  mutate(TEAM_PITCHING_HR = replace(TEAM_PITCHING_HR, TEAM_PITCHING_HR < 3 | TEAM_PITCHING_HR > 305, NA))
+```
+
+TEAM_PITCHING_BB: This statistic is also elusive. I'll eliminate the 0 value but I'm not comfortable deleting any values for being too small. As for the high values, some of them are totally unrealistic. I looked manually at the last 22 years (an era in which walks are unusually high), and the highest in this period is 697 walks allowed in 2004. Let's allow for a maximum of 750, again just to be cautious.
+
+```{r}
+training = training %>% 
+  mutate(TEAM_PITCHING_BB = replace(TEAM_PITCHING_BB, TEAM_PITCHING_BB == 0 | TEAM_PITCHING_BB > 750, NA))
+```
+
+TEAM_PITCHING_SO: I again looked at the last 22 years; strikeouts have been remarkably prevalant. The highest value I found was 1,687 in 2018. For a minimum, let's go with a conservative 300. 
+
+
+```{r}
+training = training %>% 
+  mutate(TEAM_PITCHING_SO = replace(TEAM_PITCHING_SO, TEAM_PITCHING_SO < 300 | TEAM_PITCHING_SO > 1687, NA))
+```
+
+TEAM_FIELDING_E: There have never been more than 867 errors committed in a season. I couldn't find the minimum, but 65 isn't impossible so we don't need to touch it. 
+
+```{r}
+training = training %>% 
+  mutate(TEAM_FIELDING_E = replace(TEAM_FIELDING_E, TEAM_FIELDING_E > 867, NA))
+```
+
+TEAM_FIELDING_DP: There have never been more than 217. I couldn't find the minimum, and again the minimum in the data seems reasonable enough.
+
+```{r}
+training = training %>% 
+  mutate(TEAM_FIELDING_DP = replace(TEAM_FIELDING_DP, TEAM_FIELDING_DP > 217, NA))
+```
+
+The data has now been ridden of bad entries, and we can proceed to the next steps.
+
+
+
+####  Remove columns with too many NAs
+
+Now that we've accounted for errant entries, we can take a look at columns with missing values and address them. 
+
+```{r}
+print(colSums(is.na(training)))
+```
+
+The column TEAM_BATTING_HBP has 2,064 missing values which represents nearly 92% of the observations. As such, we'll drop that column:
+
+```{r}
+training = training %>% 
+  dplyr::select(-TEAM_BATTING_HBP)
+```
+
+
+The second worst offender is TEAM_BASERUN_CS which is missing 34% of its values. I'll take a look at the distributions to determine whether to use the mean or median for imputed values.
+
+
+```{r}
+cols_missing_values = c("TEAM_BATTING_H", "TEAM_BATTING_2B", "TEAM_BATTING_3B", "TEAM_BATTING_HR", "TEAM_BATTING_BB", "TEAM_BATTING_SO", "TEAM_BASERUN_SB", "TEAM_BASERUN_CS", "TEAM_PITCHING_H", "TEAM_PITCHING_HR", "TEAM_PITCHING_BB", "TEAM_PITCHING_SO", "TEAM_FIELDING_E", "TEAM_FIELDING_DP")
+for(col in cols_missing_values) {
+  hist(training[[col]], main=col, xlab=col, breaks=30)
+}
+```
+
+
+The most skewed distributions are: TEAM_BASERUN_SB, TEAM_BASERUN_CS, TEAM_PITCHING_H, and TEAM_FIELDING_E. We will impute using medians for those columns. For the other columns we will impute using means. 
+
+```{r}
+predictors = c("TEAM_BATTING_H", "TEAM_BATTING_2B", "TEAM_BATTING_3B", "TEAM_BATTING_HR", "TEAM_BATTING_BB", "TEAM_BATTING_SO", "TEAM_PITCHING_HR", "TEAM_PITCHING_BB", "TEAM_PITCHING_SO", "TEAM_FIELDING_DP", "TEAM_BASERUN_SB", "TEAM_BASERUN_CS", "TEAM_PITCHING_H", "TEAM_FIELDING_E")
+
+percentiles = lapply(training[predictors], function(column) {
+    quantile(column, probs = c(0.05, 0.95), na.rm = TRUE)
+})
+names(percentiles) = predictors
+
+
+
+```
+
+```{r}
+impute = function(column, p5, p95, method = "mean") {
+  column = if_else(column == 0, NA_real_, column)  # 0 becomes NA
+  
+  if (method == "mean") {
+    imputed_column = if_else(is.na(column), mean(column, na.rm = TRUE), column)
+  } else if (method == "median") {
+    imputed_column = if_else(is.na(column), median(column, na.rm = TRUE), column)
+  }
+  
+  # Winorization
+  imputed_column = if_else(imputed_column > p95, p95, imputed_column)
+  imputed_column = if_else(imputed_column < p5, p5, imputed_column)
+  
+  return(imputed_column)
+}
+
+```
+
+
+```{r}
+for (col in names(percentiles)) {
+  p5 = percentiles[[col]][1]
+  p95 = percentiles[[col]][2]
+  
+  method = if (col %in% c("TEAM_BASERUN_SB", "TEAM_BASERUN_CS", "TEAM_PITCHING_H", "TEAM_FIELDING_E")) "median" else "mean"
+  training[[col]] = impute(training[[col]], p5, p95, method)
+}
+
+```
+
+
+#### adding ratio columns
+
+Because the prevelance of strikeouts, for example, varies tremendously based on the era, the raw number of strikeouts is not necessarily insightful. Rather ratios, such as TEAM_BATTING_SO / TEAM_PITCHING_SO might be more insightful. We make three such ratios:
+
+1. TEAM_BATTING_H_TEAM_PITCHING_H_RATIO
+2. TEAM_BATTING_HR_TEAM_PITCHING_HR_RATIO
+3. TEAM_BATTING_BB_TEAM_PITCHING_BB_RATIO
+4. TEAM_BATTING_SO_TEAM_PITCHING_SO_RATIO 
+
+```{r}
+training = training %>%
+  mutate(TEAM_BATTING_H_TEAM_PITCHING_H_RATIO = TEAM_BATTING_H / TEAM_PITCHING_H,
+         TEAM_BATTING_HR_TEAM_PITCHING_HR_RATIO = TEAM_BATTING_HR / TEAM_PITCHING_HR,
+         TEAM_BATTING_BB_TEAM_PITCHING_BB_RATIO = TEAM_BATTING_BB / TEAM_PITCHING_BB,
+         TEAM_BATTING_SO_TEAM_PITCHING_SO_RATIO = TEAM_BATTING_SO / TEAM_PITCHING_SO
+         )
+
+```
+
+
+
+
+
+#### Transformations:
+
+Let's take a look 
+
+```{r}
+
+predictor_vars = c("TEAM_BATTING_H", "TEAM_BATTING_2B", "TEAM_BATTING_3B", "TEAM_BATTING_HR", "TEAM_BATTING_BB", 
+                    "TEAM_BATTING_SO", "TEAM_BASERUN_SB", "TEAM_BASERUN_CS", "TEAM_PITCHING_H", 
+                    "TEAM_PITCHING_HR", "TEAM_PITCHING_BB", "TEAM_PITCHING_SO", "TEAM_FIELDING_E", "TEAM_FIELDING_DP",
+                   "TEAM_BATTING_H_TEAM_PITCHING_H_RATIO", "TEAM_BATTING_HR_TEAM_PITCHING_HR_RATIO",
+                   "TEAM_BATTING_BB_TEAM_PITCHING_BB_RATIO", "TEAM_BATTING_SO_TEAM_PITCHING_SO_RATIO")
+
+
+for (col in predictor_vars) {
+  
+  # histogram
+  print(
+    ggplot(training, aes(x = .data[[col]])) + 
+      geom_histogram(bins = 30) +
+      labs(title = paste("Histogram of", col), x = col, y = "Frequency")
+  )
+  
+  #qq plot
+  qqnorm(training[[col]], main = paste("Q-Q Plot of", col))
+  qqline(training[[col]])
+  
+  #Shapiro-Wilk
+  shapiro_test = shapiro.test(training[[col]][!is.na(training[[col]])]) 
+  print(paste("Shapiro test - ", col, "p-value:", shapiro_test$p.value))
+  
+  #relationship with target varable
+  print(
+    ggplot(training, aes(x = .data[[col]], y = TARGET_WINS)) +
+    geom_point() +
+    geom_smooth(method = "lm") +
+    labs(title = "Relationship with TARGET_WINS", x = col, y = "TARGET_WINS"))
+}
+
+  
+
+```
+
+
+
+```{r}
+library(MASS)
+pred_temp = training[, c("TEAM_BATTING_H", "TEAM_BATTING_2B", "TEAM_BATTING_3B", "TEAM_BATTING_HR", "TEAM_BATTING_BB", 
+                           "TEAM_BATTING_SO", "TEAM_BASERUN_SB", "TEAM_BASERUN_CS", "TEAM_PITCHING_H", 
+                           "TEAM_PITCHING_HR", "TEAM_PITCHING_BB", "TEAM_PITCHING_SO", "TEAM_FIELDING_E", "TEAM_FIELDING_DP",
+                         "TEAM_BATTING_H_TEAM_PITCHING_H_RATIO", "TEAM_BATTING_HR_TEAM_PITCHING_HR_RATIO",
+                         "TEAM_BATTING_BB_TEAM_PITCHING_BB_RATIO", "TEAM_BATTING_SO_TEAM_PITCHING_SO_RATIO")]
+
+optimal_lambdas = numeric(length = ncol(pred_temp))
+names(optimal_lambdas) = colnames(pred_temp)
+
+for (colname in colnames(pred_temp)) {
+  x = pred_temp[[colname]]  
+  bc_out = boxcox(x ~ 1, plotit = FALSE)
+  
+  optimal_lambdas[colname] = bc_out$x[which.max(bc_out$y)]
+}
+
+print(optimal_lambdas)
+
+
+```
+
+Now we need to apply the transformations: 
+
+```{r}
+for (var in names(optimal_lambdas)) {
+  lambda = optimal_lambdas[var]
+  new_var_name = paste0(var, "_bc")
+  
+  if (lambda == 0) {
+    training[[new_var_name]] = log(training[[var]]) #if lambda == 0 then use log
+  } else {
+    training[[new_var_name]] = (training[[var]]^lambda - 1) / lambda #formula for box-box
+  }
+}
+
+```
+
+Now let's take a look at the normality and linearity with the transformed variables: 
+
+```{r}
+bc_columns = names(training)[grepl("_bc$", names(training))]
+
+for (col in bc_columns) {
+  
+  # histogram
+  print(
+    ggplot(training, aes(x = .data[[col]])) + 
+      geom_histogram(bins = 30) +
+      labs(title = paste("Histogram of", col), x = col, y = "Frequency")
+  )
+  
+  #qq plot
+  qqnorm(training[[col]], main = paste("Q-Q Plot of", col))
+  qqline(training[[col]])
+  
+  #Shapiro-Wilk
+  shapiro_test = shapiro.test(training[[col]][!is.na(training[[var]])]) 
+  print(paste("Shapiro test - ", col, "p-value:", shapiro_test$p.value))
+  
+  #relationship with target varable
+  print(
+    ggplot(training, aes(x = .data[[col]], y = TARGET_WINS)) +
+    geom_point() +
+    geom_smooth(method = "lm") +
+    labs(title = "Relationship with TARGET_WINS", x = col, y = "TARGET_WINS"))
+}
+```
+
+Now let's apply the same transformations to the testing data:
+
+```{r}
+testing = read_csv("https://raw.githubusercontent.com/gsteinmetzsilber/DATA621/main/Assignment1/moneyball-evaluation-data.csv")
+```
+
+```{r}
+#remove implausible values
+testing = testing %>%
+  mutate(TEAM_BATTING_H = replace(TEAM_BATTING_H, TEAM_BATTING_H > 1783, NA),
+         TEAM_BATTING_2B = replace(TEAM_BATTING_2B, TEAM_BATTING_2B < 116 | TEAM_BATTING_2B > 373, NA),
+         TEAM_BATTING_3B = replace(TEAM_BATTING_3B, TEAM_BATTING_3B < 5 | TEAM_BATTING_3B > 153, NA),
+         TEAM_BATTING_HR = replace(TEAM_BATTING_HR, TEAM_BATTING_HR < 3 | TEAM_BATTING_HR > 307, NA),
+         TEAM_BATTING_BB = replace(TEAM_BATTING_BB, TEAM_BATTING_BB < 282 | TEAM_BATTING_BB > 835, NA),
+         TEAM_BATTING_SO = replace(TEAM_BATTING_SO, TEAM_BATTING_SO < 308 | TEAM_BATTING_SO > 1596, NA),
+         TEAM_BASERUN_SB = replace(TEAM_BASERUN_SB, TEAM_BASERUN_SB < 13 | TEAM_BASERUN_SB > 581, NA),
+         TEAM_BASERUN_CS = replace(TEAM_BASERUN_CS, TEAM_BASERUN_CS < 8 | TEAM_BASERUN_CS > 185, NA),
+         TEAM_BATTING_HBP = replace(TEAM_BATTING_HBP, TEAM_BATTING_HBP < 5 | TEAM_BATTING_HBP > 160, NA),
+         TEAM_PITCHING_H = replace(TEAM_PITCHING_H, TEAM_PITCHING_H > 3000, NA),
+         TEAM_PITCHING_HR = replace(TEAM_PITCHING_HR, TEAM_PITCHING_HR < 3 | TEAM_PITCHING_HR > 305, NA),
+         TEAM_PITCHING_BB = replace(TEAM_PITCHING_BB, TEAM_PITCHING_BB == 0 | TEAM_PITCHING_BB > 750, NA),
+         TEAM_PITCHING_SO = replace(TEAM_PITCHING_SO, TEAM_PITCHING_SO < 300 | TEAM_PITCHING_SO > 1687, NA),
+         TEAM_FIELDING_E = replace(TEAM_FIELDING_E, TEAM_FIELDING_E > 867, NA),
+         TEAM_FIELDING_DP = replace(TEAM_FIELDING_DP, TEAM_FIELDING_DP > 217, NA))
+
+#drop HBP column
+
+testing = testing %>% 
+  dplyr::select(-TEAM_BATTING_HBP)
+```
+
+
+```{r}
+#imputing
+for (col in names(percentiles)) {
+  p5 = percentiles[[col]][1]
+  p95 = percentiles[[col]][2]
+  
+  method = if (col %in% c("TEAM_BASERUN_SB", "TEAM_BASERUN_CS", "TEAM_PITCHING_H", "TEAM_FIELDING_E")) "median" else "mean"
+  testing[[col]] = impute(testing[[col]], p5, p95, method)
+}
+
+```
+
+Adding new columns: 
+
+```{r}
+testing = testing %>%
+  mutate(TEAM_BATTING_H_TEAM_PITCHING_H_RATIO = TEAM_BATTING_H / TEAM_PITCHING_H,
+         TEAM_BATTING_HR_TEAM_PITCHING_HR_RATIO = TEAM_BATTING_HR / TEAM_PITCHING_HR,
+         TEAM_BATTING_BB_TEAM_PITCHING_BB_RATIO = TEAM_BATTING_BB / TEAM_PITCHING_BB,
+         TEAM_BATTING_SO_TEAM_PITCHING_SO_RATIO = TEAM_BATTING_SO / TEAM_PITCHING_SO
+         )
+```
+
+And applying the transformations:
+
+```{r}
+for (var in names(optimal_lambdas)) {
+  lambda = optimal_lambdas[var]
+  new_var_name = paste0(var, "_bc")
+  
+  if (lambda == 0) {
+    testing[[new_var_name]] = log(testing[[var]])
+  } else {
+    testing[[new_var_name]] = (testing[[var]]^lambda - 1) / lambda
+  }
+}
+
+```
+

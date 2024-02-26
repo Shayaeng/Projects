@@ -1,0 +1,735 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+
+```{r}
+library(readr)
+library(dplyr)
+library(mice)
+library(caret)
+library(DescTools)
+```
+
+Sources Referenced:
+- https://www.r-bloggers.com/2015/10/imputing-missing-data-with-r-mice-package/
+- https://www.gerkovink.com/miceVignettes/
+
+
+Steps:
+
+- 5 Number Summary + Outlier Detection
+- Deal with Outliers:
+  - keep if a part of the data
+  - if not apart of data population, remove
+  - if error, try to fix (0 values and outliers)
+  - Winsorize
+- Transform
+- Impute
+
+
+https://cran.r-project.org/mirrors.html
+```{r Load Data}
+train <- read_csv("..\\data\\moneyball-training-data.csv")
+
+set.seed(3456)
+trainIndex <- createDataPartition(train$INDEX, p = .7, 
+                                  list = FALSE, 
+                                  times = 1)
+
+train <- train[trainIndex,]
+trainEval  <- train[-trainIndex,]
+```
+
+```{r}
+summary(train)
+```
+
+```{r Outliers}
+boxplot(train)$out
+text(colnames(train), srt = 45, pos = 1, xpd = TRUE)
+
+
+for (col_name in names(train)) {
+  
+  boxplot(train[[col_name]], main = col_name)
+  
+}
+```
+
+
+Missing completely at random (MCAR) when the missingness mechanism is completely independent of the estimate of our parameter(s) of interest. Deletion will yield unbiased results.
+
+
+Missing at random (MAR) when the missingness mechanism is conditionally independent of the estimate of our parameter(s) of interest. In short, the data with complete cases are biased.
+
+
+Missing not at random (MNAR) when the missingness mechanism is associated with the estimate of our parameter(s) of interest
+
+```{r}
+percentMiss <- function(x){sum(is.na(x))/length(x)*100} # Creates percentage of missing values
+
+variable_pMiss <- apply(train,2,percentMiss) # 2 = runs on columns
+sample_pMiss <- apply(train,1,percentMiss) # 1 = runs on rows
+```
+
+```{r}
+variable_pMiss
+sum(sample_pMiss > 50)
+```
+|   We can see that most variables have low percentage miss rates. Two variables TEAM_BATTING_HBP and TEAM_BASERUN_CS have 91.6% and 33.9% missing rates which leads to a recommendation to remove at least TEAM_BATTING_HBP from the dataset. Should TEAM_BASERUN_CS be removed for having more than 25% of observations missing its value?
+
+
+```{r Check Rows for Miss Data}
+
+#Filters for instances where the entire row is NA
+train <- train %>% 
+  filter(if_any(everything(), ~ !is.na(.))) #keep rows that have atleast one value that is not NA
+
+#if_any : https://www.tidyverse.org/blog/2021/02/dplyr-1-0-4-if-any/
+#         https://dplyr.tidyverse.org/reference/across.html
+
+```
+
+```{r Check Cols for Miss Data}
+
+#Filtering for instances where the entire column is NA
+
+not_all_na <- function(x) any(!is.na(x)) 
+# Create a function since where() only works with functions
+# !is.na(x) returns a vector of T/F if it is not an NA value
+# any() checks to see if any values in the vector are TRUE
+
+train_cleaned <- train %>% select(where(not_all_na)) # Selects only columns that are not completely NA
+
+```
+
+```{r Drop TB_HBP and Rename}
+
+train_cleaned <- train_cleaned %>% select (-TEAM_BATTING_HBP, -INDEX)
+
+colnames(train_cleaned) <- c("Wins","Bat_H","Bat_2B","Bat_3B","Bat_HR","Bat_BB", "Bat_SO","Base_SB","Base_CS","Pitch_H","Pitch_HR","Pitch_BB","Pitch_SO","Field_E","Field_DP")
+
+train_cleaned <- as.data.frame(train_cleaned)
+```
+
+```{r Eval Set Cleaned}
+
+trainEval <- trainEval %>% select (-TEAM_BATTING_HBP, -INDEX)
+
+colnames(trainEval) <- c("Wins","Bat_H","Bat_2B","Bat_3B","Bat_HR","Bat_BB", "Bat_SO","Base_SB","Base_CS","Pitch_H","Pitch_HR","Pitch_BB","Pitch_SO","Field_E","Field_DP")
+
+trainEval <- as.data.frame(trainEval)
+```
+
+
+# Dropping Outliers Technique
+
+```{r}
+
+calc_outliers <- function(column) { # Calculates the quantiles of the column
+  Q1 <- quantile(column, 0.25, na.rm = TRUE)
+  Q3 <- quantile(column, 0.75, na.rm = TRUE)
+  
+  # Calculates IQR
+  IQR_val <- Q3 - Q1
+  
+  # Calculates the Outlier benchmark
+  lower_limit <- Q1 - 1.5 * IQR_val
+  upper_limit <- Q3 + 1.5 * IQR_val
+  
+  # Store Limits
+  data.frame(lower_limit = lower_limit, upper_limit = upper_limit)
+}
+
+# Apply calculate_outlier_limits function to each column
+limits <- lapply(train_cleaned, calc_outliers)
+
+# Convert list to dataframe
+limits <- do.call(rbind, limits)
+
+```
+```{r Filtering Based on Limits}
+
+train_outs_drop <- train_cleaned
+
+nrow(train_outs_drop)
+
+train_outs_drop <- train_outs_drop %>%
+  filter(Bat_H >1152 | Bat_H < 1769 | is.na(Bat_H))
+
+train_outs_drop <- train_outs_drop %>%
+  filter(Bat_2B > 111 | Bat_2B < 371 | is.na(Bat_2B))
+
+train_outs_drop <- train_outs_drop %>% # Negative values are ignored
+  filter(Bat_3B < 130 | is.na(Bat_3B)) # drops a good bit
+
+train_outs_drop <- train_outs_drop %>%
+  filter(Bat_HR < 304 | is.na(Bat_HR)) #none
+
+train_outs_drop <- train_outs_drop %>%
+  filter(Bat_BB > 257 | Bat_BB < 773 | is.na(Bat_BB)) #none
+
+train_outs_drop <- train_outs_drop %>%
+  filter(Bat_SO < 1503 | is.na(Bat_SO)) #drops  a good bit
+
+train_outs_drop <- train_outs_drop %>%
+  filter(Base_SB < 291 | is.na(Base_SB)) #drops a good bit
+
+train_outs_drop <- train_outs_drop %>%
+  filter(Base_CS > 2 | Base_CS < 98 | is.na(Base_CS))
+
+train_outs_drop <- train_outs_drop %>%
+  filter(Pitch_H > 1023 | Pitch_H < 2078 | is.na(Pitch_H) )
+
+train_outs_drop <- train_outs_drop %>%
+  filter(Pitch_HR < 300 | is.na(Pitch_HR))
+nrow(train_outs_drop)
+
+train_outs_drop <- train_outs_drop %>%
+  filter(Pitch_BB > 274 | Pitch_BB < 813 | is.na(Pitch_BB))
+nrow(train_outs_drop)
+
+train_outs_drop <- train_outs_drop %>%
+  filter(Pitch_SO > 84 | Pitch_SO < 1498 | is.na(Pitch_SO))
+nrow(train_outs_drop)
+
+train_outs_drop <- train_outs_drop %>%
+  filter(Field_E < 432 | is.na(Field_E))
+nrow(train_outs_drop)
+
+train_outs_drop <- train_outs_drop %>%
+  filter(Field_DP > 81 | Field_DP < 214 | is.na(Field_DP))
+nrow(train_outs_drop)
+
+
+```
+
+```{r Histograms of Out Drop Data}
+for (col_name in colnames(train_outs_drop)) {
+  hist(train_outs_drop[[col_name]], main = col_name, xlab = col_name)
+}
+
+```
+
+
+# Winsorized Data 
+
+```{r Winsorize the Data}
+
+Wins <- train_cleaned$Wins
+train_winsor <- train_cleaned[-1] # removing wins to avoid winsorizing them
+
+for (col in colnames(train_winsor[-1])) {
+  train_winsor[[col]] <- Winsorize(train_winsor[[col]], na.rm = TRUE)
+}
+
+train_winsor <- data.frame(Wins,train_winsor)
+```
+
+## Checking Outliers and Distribution after Winsor
+
+```{r Histograms of Untampered Data}
+for (col_name in colnames(train_cleaned)) {
+  hist(train_cleaned[[col_name]], main = col_name, xlab = col_name)
+}
+
+```
+
+
+```{r}
+for (col_name in colnames(train_winsor)) {
+  hist(train_winsor[[col_name]], main = col_name, xlab = col_name)
+}
+```
+
+```{r Boxplots after Winsor}
+# Checks impacts of Winsorizing the dataframe
+# Pitch_H and Field_E still have many outliers
+
+boxplot(train_winsor)$out
+text(colnames(train_winsor), srt = 45, pos = 1, xpd = TRUE)
+
+
+for (col_name in names(train_winsor)) {
+  
+  boxplot(train_winsor[[col_name]], main = col_name)
+  
+}
+```
+
+```{r}
+summary(train_winsor)
+```
+
+```{r}
+summary(train_cleaned)
+```
+## Checking 0 Values
+
+Since only one row has a 0 value, and it is in the Wins column. It will be left in the dataset as it seems a possible value.
+
+```{r}
+
+colnames(train_winsor)
+
+rows_with_zero <- which(apply(train_winsor == 0, 1, any)) # apply will create a vector of T/F that determines if row has 0 in it
+# which()
+
+train_winsor[rows_with_zero,]
+
+```
+
+
+```{r Check 0s for Dataset of Dropped Outliers 0s}
+
+colnames(train_outs_drop)
+
+rows_with_zero <- which(apply(train_outs_drop == 0, 1, any)) # apply will create a vector of T/F that determines if row has 0 in it
+# which()
+
+
+train_outs_drop[rows_with_zero,]
+```
+
+```{r Check 0s for Dataset of Basic Cleaned Data}
+
+rows_with_zero <- which(apply(train_cleaned == 0, 1, any)) # apply will create a vector of T/F that determines if row has 0 in it
+# which()
+
+
+train_cleaned[rows_with_zero,]
+
+```
+|    28 rows contain a 0 for one of its values. These 0 values are extremely unlikely and will be replaced with NAs. After replacing with NAs, we will see if any samples have more than 50% of its variables missing for removal.
+
+```{r train_0 NA Count}
+# Replace 0 values with NA's in rows
+train_0 <- apply(train_cleaned, 2, function(col) replace(col, col == 0, NA))
+
+# Convert the matrix back to a dataframe
+train_0 <- as.data.frame(train_0)
+
+
+train_0 <- train_0 %>% filter(rowSums(is.na(train_0))<7)
+
+```
+```{r}
+for (col_name in colnames(train_0)) {
+  hist(train_0[[col_name]], main = col_name, xlab = col_name)
+}
+```
+
+```{r}
+summary(train_0)
+```
+
+
+
+# Transform (BoxCox)
+
+
+## BoxCox Transformation of 0 Replaced NAs Data
+```{r}
+preProcValues_0 <- preProcess(train_0, method = "BoxCox") #-1 to remove win
+
+trainBC_0 <- predict(preProcValues_0, train_0)
+
+preProcValues_0$bc
+
+trainBC_0
+```
+
+## BoxCox Transformation of Winsorized Data
+
+```{r Winsor Transform}
+
+winsor_Field_E_trans <- train_winsor$Field_E #separating the columns to ensure only they are transformed
+winsor_Pitch_H_trans <- train_winsor$Pitch_H
+
+transforms_winsor <- data.frame(winsor_Field_E_trans, winsor_Pitch_H_trans)
+
+preProcValues_winsor <- preProcess(transforms_winsor, method = "BoxCox") 
+
+trainBC_winsor <- predict(preProcValues_winsor, transforms_winsor) # pulling the transformed values
+
+trainBC_winsor <- data.frame(train_winsor,trainBC_winsor) #combining values into dataframe
+```
+
+
+## Normality Before/After Transformation Winsorized
+```{r}
+for (col_name in colnames(trainBC_winsor[-1])) { #-1 removes the Wins columns
+  hist(trainBC_winsor[[col_name]], main = col_name, xlab = col_name)
+}
+```
+
+
+
+## Transformation of non-winsorized data
+
+```{r No Cleaning Transform}
+preProcValues <- preProcess(train_cleaned, method = "BoxCox")
+
+trainBC <- predict(preProcValues, train_cleaned)
+
+preProcValues
+
+trainBC
+
+cols_trans <- c("Bat_H","Bat_2B","Pitch_H","Field_E","Field_DP")
+```
+
+
+## Normality Before/After for Non-Winsorized
+```{r Before Trans}
+for (col_name in cols_trans) {
+  hist(train_cleaned[[col_name]], main = col_name, xlab = col_name)
+}
+```
+
+
+
+# Transformations for Outliers Dropped Data
+|    Chosen to only transform two columns, Field_E and Pitch_H
+```{r Outliers Transform}
+field_e <- train_outs_drop$Field_E #separating the columns to ensure only they are transformed
+pitch_h <- train_outs_drop$Pitch_H
+transforms <- data.frame(field_e, pitch_h)
+
+preProcValues_outs <- preProcess(transforms, method = "BoxCox")
+
+trainBC_outs <- predict(preProcValues_outs, transforms) # pulling the transformed values
+
+trainBC_outs <- data.frame(train_outs_drop,trainBC_outs) # re combining columns
+```
+
+
+```{r Before Trans}
+for (col_name in colnames(trainBC_outs)) {
+  hist(trainBC_outs[[col_name]], main = col_name, xlab = col_name)
+}
+```
+## BoxCox Transformation of trainEval Data
+```{r}
+library(forecast)
+# Grabbing columns for transformation
+trainEval_Field_E_trans <- trainEval$Field_E
+trainEval_Pitch_H_trans <- trainEval$Pitch_H
+
+# Grabbing lambda values used on the training sets
+## Winsor Data
+winsor_fe_lambda <- preProcValues_winsor$bc$winsor_Field_E_trans$lambda
+winsor_ph_lambda <- preProcValues_winsor$bc$winsor_Pitch_H_trans$lambda
+## Outs Dropped Data
+out_fe_lambda <- preProcValues_outs$bc$field_e$lambda
+out_ph_lambda <- preProcValues_outs$bc$pitch_h$lambda
+
+# Transforming
+trainEval_win_field_e_trans <- BoxCox(trainEval_Field_E_trans, winsor_fe_lambda)
+trainEval_win_pitch_h_trans <- BoxCox(trainEval_Pitch_H_trans, winsor_ph_lambda)
+
+trainEval_out_field_e_trans <- BoxCox(trainEval_Field_E_trans, out_fe_lambda)
+trainEval_out_pitch_h_trans <- BoxCox(trainEval_Pitch_H_trans, out_ph_lambda)
+
+# Joining
+
+trainEvalBC_winsor <- data.frame(trainEval, trainEval_win_field_e_trans, trainEval_win_pitch_h_trans)
+trainEvalBC_outs <- data.frame(trainEval, trainEval_out_field_e_trans, trainEval_out_pitch_h_trans)
+
+# Renaming columns to match the training set column names
+colnames(trainEvalBC_winsor)[16:17] <- c("winsor_Field_E_trans","winsor_Pitch_H_trans")
+colnames(trainEvalBC_outs)[16:17] <- c("field_e","pitch_h")
+
+
+# MICE Impute
+trainEval_imputed_WinsorBC <- mice(trainEvalBC_winsor,method = "pmm", m=5, maxit = 50, seed = 500, print = F)
+trainEval_imputed_BC_outs <- mice(trainEvalBC_outs,method = "pmm", m=5, maxit = 50, seed = 500, print = F)
+
+# Pulling Out MICE Values
+
+trainEvalBC_winsor_imputes <- complete(trainEval_imputed_WinsorBC,1)
+trainEvalBC_outs_imputes <- complete(trainEval_imputed_BC_outs, 1)
+
+# Creating Ratios
+
+trainEval_winsor_imputed_ratios <- trainEvalBC_winsor_imputes %>%
+  mutate(Ratio_Bat_H_Pitch_H = Bat_H / Pitch_H,
+         Ratio_Bat_HR_Pitch_HR = Bat_HR / Pitch_HR,
+         Ratio_Bat_BB_Pitch_BB = Bat_BB / Pitch_BB,
+         Ratio_Bat_SO_Pitch_SO = Bat_SO / Pitch_SO
+         )
+
+trainEval_outs_imputed_ratios <- trainEvalBC_outs_imputes %>%
+  mutate(Ratio_Bat_H_Pitch_H = Bat_H / Pitch_H,
+         Ratio_Bat_HR_Pitch_HR = Bat_HR / Pitch_HR,
+         Ratio_Bat_BB_Pitch_BB = Bat_BB / Pitch_BB,
+         Ratio_Bat_SO_Pitch_SO = Bat_SO / Pitch_SO
+         )
+
+
+write_csv(trainEval_outs_imputed_ratios,"../data/prepped_data/trainEval_out_imputed_ratios.csv")
+write_csv(trainEval_winsor_imputed_ratios,"../data/prepped_data/trainEval_winsor_imputed_ratios.csv")
+
+```
+
+|    For non-winsorized data, It looks like if outliers can be removed or dealt with, only Pitch_H and Field_E would be needed. For winsorized data, every column was transformed, implying a decrease in normality.
+
+```{r Miss Pattern}
+
+pattern <- md.pattern(train_cleaned, rotate.names = TRUE)
+
+pattern <- as.data.frame(pattern)
+
+pattern
+```
+
+|    Batting_HBP is missing for almost all observations and should be removed. There were no samples that had at least 50% of the variables missing, leading to the conclusion of keeping all observations. Only a maximum of 3 features are missing at a time. 3 features out of 14 is less than 50% of the feature count for a sample, so no observations need to be replaced.
+
+
+
+|    Imputation will use the MICE package and using the predictive mean modeling method to generate predictions
+
+#norm.predict (imputes based on the "best value" determined by linear reg)
+#mice.impute.norm.boot (imputes by log reg with bootstrap aggregation, best for )
+#norm.nob (imputes without accounting for parameter uncertainty, Bat_SO looks bad)
+#norm (univariate missing data by Bayesian linear reg - Pitch_SO and Field_DP look ok)
+#mpmm (imputes multivariate incomplete data that has relationships like polynomials)
+#cart (imputes based on regression trees - Bat_SO matches great)
+
+Before changing variables used in prediction methods. The best methods that match are:
+Bat_SO - CART
+Norm - Pitch_SO and Field_DP
+Norm.nob - for any other than Bat_SO
+Mean - for Base_SB and Base_CS, Pitch_SO? Field_DP
+
+
+CART was used for Bat_SO and Pitch_SO as their distributions matched well. Base SB, Base_CS, and Field_DP worked well with mean.
+
+# Imputing with MICE
+
+## Imputing Winsorized Data
+```{r}
+#methods_vec_WinsorBC <- c("","","","","","","rf","pmm","pmm","","","","cart","","pmm") #Winsorized data methods
+
+train_imputed_WinsorBC <- mice(trainBC_winsor,method = "pmm", m=5, maxit = 50, seed = 500, print = F)
+
+densityplot(train_imputed_WinsorBC)
+```
+
+### Imputing Non-Winsorized Data with 0 Records (train_cleaning origin)
+
+```{r MICE Impute, echo = FALSE}
+train_imputed_BC <- mice(trainBC,method = "pmm", m=5, maxit = 50, seed = 500, print = F)
+```
+```{r}
+densityplot(train_imputed_BC)
+```
+
+## Impute for train_0 data
+
+|    This is to impute on the data where the 0s ahve been replaced with NAs, and then rows with more than 50% of missing values were dropped.
+```{r}
+train_imputed_BC_0<- mice(trainBC_0,method = "pmm", m=5, maxit = 50, seed = 500, print = F)
+```
+```{r}
+densityplot(train_imputed_BC_0)
+```
+
+```{r}
+#stripplot(train_imputed, Bat_SO+Base_SB+Base_CS+Pitch_SO+Field_DP~.imp, pch=20, cex=2)
+```
+
+## Impute Outliers Dropped
+
+```{r MICE Impute, echo = FALSE}
+train_imputed_BC_outs <- mice(trainBC_outs,method = "pmm", m=5, maxit = 50, seed = 500, print = F)
+```
+
+```{r}
+densityplot(train_imputed_BC_outs)
+```
+
+
+## Adding Ratios
+
+1. TEAM_BATTING_H_TEAM_PITCHING_H_RATIO
+2. TEAM_BATTING_HR_TEAM_PITCHING_HR_RATIO
+3. TEAM_BATTING_BB_TEAM_PITCHING_BB_RATIO
+4. TEAM_BATTING_SO_TEAM_PITCHING_SO_RATIO 
+
+
+
+```{r Winsor Impute}
+winsor_imputes_1 <- complete(train_imputed_WinsorBC, 1)
+winsor_imputes_2 <- complete(train_imputed_WinsorBC, 2)
+winsor_imputes_3 <- complete(train_imputed_WinsorBC, 3)
+winsor_imputes_4 <- complete(train_imputed_WinsorBC, 4)
+winsor_imputes_5 <- complete(train_imputed_WinsorBC, 5)
+
+winsor_imputed_ratios <- winsor_imputes_1 %>%
+  mutate(Ratio_Bat_H_Pitch_H = Bat_H / Pitch_H,
+         Ratio_Bat_HR_Pitch_HR = Bat_HR / Pitch_HR,
+         Ratio_Bat_BB_Pitch_BB = Bat_BB / Pitch_BB,
+         Ratio_Bat_SO_Pitch_SO = Bat_SO / Pitch_SO
+         )
+```
+
+|    These datasets ONLY had a Box Cox Transformation done. Rows with 0 Values (Roughly 25 of them) were not touched. Outliers were not touched.
+```{r Minimal Cleaning Impute}
+imputes_1 <- complete(train_imputed_BC, 1)
+imputes_2 <- complete(train_imputed_BC, 2)
+imputes_3 <- complete(train_imputed_BC, 3)
+imputes_4 <- complete(train_imputed_BC, 4)
+imputes_5 <- complete(train_imputed_BC, 5)
+
+imputed_ratios <- imputes_1 %>%
+  mutate(Ratio_Bat_H_Pitch_H = Bat_H / Pitch_H,
+         Ratio_Bat_HR_Pitch_HR = Bat_HR / Pitch_HR,
+         Ratio_Bat_BB_Pitch_BB = Bat_BB / Pitch_BB,
+         Ratio_Bat_SO_Pitch_SO = Bat_SO / Pitch_SO
+         )
+
+```
+
+|    These datasets replaced 0 values with NA and imputed 
+```{r Replace 0 Impute}
+Drop0_imputes_1 <- complete(train_imputed_BC_0, 1)
+Drop0_imputes_2 <- complete(train_imputed_BC_0, 2)
+Drop0_imputes_3 <- complete(train_imputed_BC_0, 3)
+Drop0_imputes_4 <- complete(train_imputed_BC_0, 4)
+Drop0_imputes_5 <- complete(train_imputed_BC_0, 5)
+
+Drop0_imputed_ratios <- Drop0_imputes_1 %>%
+  mutate(Ratio_Bat_H_Pitch_H = Bat_H / Pitch_H,
+         Ratio_Bat_HR_Pitch_HR = Bat_HR / Pitch_HR,
+         Ratio_Bat_BB_Pitch_BB = Bat_BB / Pitch_BB,
+         Ratio_Bat_SO_Pitch_SO = Bat_SO / Pitch_SO
+         )
+
+```
+
+## Outliers Dropped Ratio Addition
+
+|    These datasets had outliers dropped and a boxcox transform done on Field_E and Pitch_H
+```{r}
+
+outs_imputes_1 <- complete(train_imputed_BC_outs, 1)
+outs_imputes_2 <- complete(train_imputed_BC_outs, 2)
+outs_imputes_3 <- complete(train_imputed_BC_outs, 3)
+outs_imputes_4 <- complete(train_imputed_BC_outs, 4)
+outs_imputes_5 <- complete(train_imputed_BC_outs, 5)
+
+outs_imputed_ratios <- outs_imputes_1 %>%
+  mutate(Ratio_Bat_H_Pitch_H = Bat_H / Pitch_H,
+         Ratio_Bat_HR_Pitch_HR = Bat_HR / Pitch_HR,
+         Ratio_Bat_BB_Pitch_BB = Bat_BB / Pitch_BB,
+         Ratio_Bat_SO_Pitch_SO = Bat_SO / Pitch_SO
+         )
+```
+
+
+## Write Data
+
+```{r Write Imputed Data}
+write_csv(imputed_ratios, "../data/prepped_data/imputed_ratios.csv")
+write_csv(outs_imputed_ratios, "../data/prepped_data/outs_imputed_ratios.csv")
+write_csv(winsor_imputed_ratios, "../data/prepped_data/winsor_imputed_ratios.csv")
+write_csv(Drop0_imputed_ratios,"../data/prepped_data/Drop0_imputed_ratios.csv")
+
+```
+
+
+
+```{r Testing Transformation}
+test <- read_csv("..\\data\\moneyball-evaluation-data.csv")
+test <- test %>% dplyr::select(-TEAM_BATTING_HBP, -INDEX)
+
+colnames(test) <- c("Bat_H","Bat_2B","Bat_3B","Bat_HR","Bat_BB", "Bat_SO","Base_SB","Base_CS","Pitch_H","Pitch_HR","Pitch_BB","Pitch_SO","Field_E","Field_DP")
+
+# separating the columns to ensure only they are transformed
+field_e <- test$Field_E 
+pitch_h <- test$Pitch_H
+
+# Transforming Test Data
+# Pulling lambda's used to transform the training data
+winsor_fe_lambda <- preProcValues_winsor$bc$winsor_Field_E_trans$lambda
+winsor_ph_lambda <- preProcValues_winsor$bc$winsor_Pitch_H_trans$lambda
+
+
+#### Winsor Section
+# Loading MASS section to use specific lambda value
+library(forecast)
+
+# Perform the Box-Cox transformation with the specified lambda
+test_win_field_e_trans <- BoxCox(field_e, winsor_fe_lambda)
+test_win_pitch_h_trans <- BoxCox(pitch_h, winsor_ph_lambda)
+
+# Access the transformed data
+field_e <- test_win_field_e_trans
+pitch_h <- test_win_pitch_h_trans
+
+# Join transformed columns together
+testBC_winsor <- data.frame(test, field_e,pitch_h)
+
+# Impute missing values
+testBC_winsor_imputed <- mice(testBC_winsor,method = "pmm", m=5, maxit = 50, seed = 500, print = F)
+
+# Pulling the datasets
+test_winsor_imputes_1 <- complete(testBC_winsor_imputed, 1)
+test_winsor_imputes_2 <- complete(testBC_winsor_imputed, 2)
+test_winsor_imputes_3 <- complete(testBC_winsor_imputed, 3)
+test_winsor_imputes_4 <- complete(testBC_winsor_imputed, 4)
+test_winsor_imputes_5 <- complete(testBC_winsor_imputed, 5)
+
+test_winsor_imputed_ratios <- test_winsor_imputes_1 %>%
+  mutate(Ratio_Bat_H_Pitch_H = Bat_H / Pitch_H,
+         Ratio_Bat_HR_Pitch_HR = Bat_HR / Pitch_HR,
+         Ratio_Bat_BB_Pitch_BB = Bat_BB / Pitch_BB,
+         Ratio_Bat_SO_Pitch_SO = Bat_SO / Pitch_SO
+         )
+
+# Export
+write_csv(test_winsor_imputed_ratios,"../data/prepped_data/test_winsor_imputed_ratios.csv")
+
+
+#### Outliers Dropped Section
+
+field_e <- test$Field_E
+pitch_h <- test$Pitch_H
+
+out_fe_lambda <- preProcValues_outs$bc$field_e$lambda
+out_ph_lambda <- preProcValues_outs$bc$pitch_h$lambda
+
+# Perform the Box-Cox transformation with the specified lambda
+test_out_field_e_trans <- BoxCox(field_e, out_fe_lambda)
+test_out_pitch_h_trans <- BoxCox(pitch_h, out_ph_lambda)
+
+# Join transformed columns together
+testBC_out <- data.frame(test, test_out_field_e_trans,test_out_pitch_h_trans)
+
+# Impute missing values
+testBC_out_imputed <- mice(testBC_out,method = "pmm", m=5, maxit = 50, seed = 500, print = F)
+
+# Pulling the datasets
+test_out_imputes_1 <- complete(testBC_out_imputed, 1)
+test_out_imputes_2 <- complete(testBC_out_imputed, 2)
+test_out_imputes_3 <- complete(testBC_out_imputed, 3)
+test_out_imputes_4 <- complete(testBC_out_imputed, 4)
+test_out_imputes_5 <- complete(testBC_out_imputed, 5)
+
+test_out_imputed_ratios <- test_out_imputes_1 %>%
+  mutate(Ratio_Bat_H_Pitch_H = Bat_H / Pitch_H,
+         Ratio_Bat_HR_Pitch_HR = Bat_HR / Pitch_HR,
+         Ratio_Bat_BB_Pitch_BB = Bat_BB / Pitch_BB,
+         Ratio_Bat_SO_Pitch_SO = Bat_SO / Pitch_SO
+         )
+
+# Export
+write_csv(test_out_imputed_ratios,"../data/prepped_data/test_out_imputed_ratios.csv")
+
+
+
+```
+

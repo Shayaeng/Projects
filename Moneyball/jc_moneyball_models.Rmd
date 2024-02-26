@@ -1,0 +1,27 @@
+---
+title: "Moneyball - Models"
+author: "John Cruz"
+date: "2024-02-14"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Required Libraries
+
+```{r library}
+
+```
+
+## Import Data
+
+```{r import-data}
+
+```
+
+
+
+
+

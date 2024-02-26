@@ -1,0 +1,172 @@
+---
+title: "621 hw 1"
+author: "Shaya Engelman"
+date: "2024-02-20"
+output: html_document
+---
+
+The provided dataset contained numerous extreme outliers. To address this issue, we employed two different methods. We generated two new datasets; one with the outliers removed and imputed using MICE, and another with the outliers winsorized to the 5th and 95th percentiles.
+```{r load data}
+winsor_data <- read.csv("https://raw.githubusercontent.com/d-ev-craig/DATA621_Group/main/HW1/data/prepped_data/winsor_imputed_ratios.csv")
+train_eval_winsor <- read.csv("https://raw.githubusercontent.com/d-ev-craig/DATA621_Group/main/HW1/data/prepped_data/trainEval_winsor_imputed_ratios.csv")
+out_imputed_data <- read.csv("https://raw.githubusercontent.com/d-ev-craig/DATA621_Group/main/HW1/data/prepped_data/outs_imputed_ratios.csv")
+train_eval_imputed <- read.csv("https://raw.githubusercontent.com/d-ev-craig/DATA621_Group/main/HW1/data/prepped_data/trainEval_out_imputed_ratios.csv")
+prediction_data_winsor <- read.csv("https://raw.githubusercontent.com/d-ev-craig/DATA621_Group/main/HW1/data/prepped_data/test_winsor_imputed_ratios.csv")
+```
+
+First I created a "kitchen sink" model. I included all the variables in the dataset and created a regression model. In the original model, there were major issues with colliearity and even a singularity. Rerunning the model on the datasets with the variables standardized helped with this.
+```{r kitchen sink - scale}
+#kitchen_sink_model_unstandardized <- lm(Wins ~ ., data = winsor_data)
+independent_vars_w <- setdiff(names(winsor_data), "Wins")
+
+winsor_data[, independent_vars_w] <- scale(winsor_data[, independent_vars_w])
+
+kitchen_sink_model_winsor <- lm(Wins ~ ., data = winsor_data)
+
+# redo with the imputed data
+independent_vars_i <- setdiff(names(out_imputed_data), "Wins")
+
+out_imputed_data[, independent_vars_i] <- scale(out_imputed_data[, independent_vars_i])
+
+kitchen_sink_model_imputed <- lm(Wins ~ ., data = out_imputed_data)
+
+print(summary(kitchen_sink_model_winsor))
+print(summary(kitchen_sink_model_imputed))
+```
+
+```{r}
+vif_values <- vif(kitchen_sink_model_winsor)
+
+# Print VIF values
+print(vif_values)
+```
+
+These models have a high R-squared value of greater than 0.41. However, their F-statistic is relatively low, indicating that the model is not a good fit. More importantly, the VIF values are very high, indicating that there is a high degree of multicollinearity. Additionally, some of the coefficients are not statistically significant.
+
+Let's try narrowing down the variables to statistically significant ones.
+
+First I iterated over all the variables showing lower significance and removed them. I kept trying new iterations until I reached these first two models for the two different datasets respectively. These models have almost the same r-squared value as the original kitchen sink models but managae to have much higher f-statistics and all significant factors. However, the models are strange to me based on my knowledge of baseball. The negative coefficients to both hitting doubles and pitching strikeouts in model2 both seem counterintuituive. 
+```{r model1}
+model_1 <- c("Wins", "Bat_H", "Bat_3B", "Bat_BB", "Bat_SO", "Base_SB", "Pitch_H", "Pitch_HR", "Field_E", "Field_DP",  "winsor_Field_E_trans", "winsor_Pitch_H_trans") #use with winsorized data, highest r-squared with all statistically significant variables, but makes no sense to me
+
+model1 <- lm(Wins ~ ., data = winsor_data[, model_1])
+print(summary(model1))
+```
+```{r model2} 
+model_2 <- c("Wins",  "Bat_2B", "Bat_3B", "Bat_HR", "Bat_BB", "Base_SB", "Base_CS",   "Pitch_SO", "Field_E", "Field_DP",  "pitch_h") #use with imputed data, highest r-squared with all statistically significant variables, but makes no sense to me
+
+model2 <- lm(Wins ~ ., data = out_imputed_data[, model_2])
+print(summary(model2))
+```
+
+I manually selected some of the variables to use in a new model. I tried using variables that I thought would logically be important in predicting baseball wins. I used the major hitting stats and included the winsorized pitching hits allowed stat to include at least one pitching metric. The resulting model did have a lower r-squared value but it had a higher f-statistic and felt mor logical with all the coefficients having the direction expected. I did not include hitting doubles since that had a negative coefficient. This was likely due to it already being included in the total hits stat. While, triple and home runs are included too, those contribut more directly to scoring runs.
+```{r model3}
+model_3 <- c("Wins", "Bat_H", "Bat_3B", "Bat_HR", "Base_SB", "Bat_BB", "winsor_Pitch_H_trans", "winsor_Field_E_trans") #use for winsorized data, reconsider winsor_Field_E_trans
+
+model3 <- lm(Wins ~ ., data = winsor_data[, model_3])
+print(summary(model3))
+```
+
+Let's analyze these models to try finding the best one using diagnostic plots. All the plots seem to fulfill all the reuired assumptions. The models built on the winsorized data does have more extreme outliers and tails at either end, this is expected due to leaving the outliers in. The imputed dataset has a much cleaner plot.
+
+```{r}
+par(mfrow = c(2,2))
+plot(kitchen_sink_model_imputed)
+```
+
+```{r}
+par(mfrow = c(2,2))
+plot(kitchen_sink_model_winsor)
+```
+```{r}
+par(mfrow=c(2,2))
+plot(model1)
+```
+
+```{r}
+par(mfrow=c(2,2))  
+plot(model2)
+```
+
+```{r}
+par(mfrow=c(2,2))
+plot(model3)
+```
+
+Finally, let's run our models against the evaluation data to see how they perform and to pick a model. First we have to scale the testing data to standardize it like the training data. Then we can run the models and compare their performance. The kitchen sink models have NAs for most of the metrics. This is due to the testing data having missing data. This is another drawback of a kitchen sink model, the more variables a model has, the more complex and it is and less likely to be able to be ran against new data. While model1 had the slightly best performance, I would choose model3 as the best model. It had almost as good of a performance and feels more logical.
+
+```{r}
+independent_vars_w <- setdiff(names(train_eval_winsor), "Wins")
+train_eval_winsor[, independent_vars_w] <- scale(train_eval_winsor[, independent_vars_w])
+
+independent_vars_w <- setdiff(names(train_eval_imputed), "Wins")
+train_eval_imputed[, independent_vars_w] <- scale(train_eval_imputed[, independent_vars_w])
+```
+
+```{r}
+kitchen_sink_model_winsor_eval <- predict(kitchen_sink_model_winsor, newdata = train_eval_winsor)
+kitchen_sink_model_imputed_eval <- predict(kitchen_sink_model_imputed, newdata = train_eval_imputed)
+model1_eval <- predict(model1, newdata = train_eval_winsor)
+model2_eval <- predict(model2, newdata = train_eval_imputed)
+model3_eval <- predict(model3, newdata = train_eval_winsor)
+```
+
+```{r}
+y_true_winsor <- train_eval_winsor$Wins
+y_true_imputed <- train_eval_imputed$Wins
+
+# Calculate metrics for each model
+metrics <- data.frame(
+  Model = c("Model1", "Model2", "Model3", "Kitchen Sink Winsor", "Kitchen Sink Imputed"),
+  RMSE = c(
+    sqrt(mean((y_true_winsor - model1_eval)^2)),
+    sqrt(mean((y_true_imputed - model2_eval)^2)),
+    sqrt(mean((y_true_winsor - model3_eval)^2)),
+    sqrt(mean((y_true_winsor - kitchen_sink_model_winsor_eval)^2)),
+    sqrt(mean((y_true_imputed - kitchen_sink_model_imputed_eval)^2))
+  ),
+  MSE = c(
+    mean((y_true_winsor - model1_eval)^2),
+    mean((y_true_imputed - model2_eval)^2),
+    mean((y_true_winsor - model3_eval)^2),
+    mean((y_true_winsor - kitchen_sink_model_winsor_eval)^2),
+    mean((y_true_imputed - kitchen_sink_model_imputed_eval)^2)
+  ),
+  MAE = c(
+    mean(abs(y_true_winsor - model1_eval)),
+    mean(abs(y_true_imputed - model2_eval)),
+    mean(abs(y_true_winsor - model3_eval)),
+    mean(abs(y_true_winsor - kitchen_sink_model_winsor_eval)),
+    mean(abs(y_true_imputed - kitchen_sink_model_imputed_eval))
+  ),
+  R_squared = c(
+    summary(lm(y_true_winsor ~ model1_eval))$r.squared,
+    summary(lm(y_true_imputed ~ model2_eval))$r.squared,
+    summary(lm(y_true_winsor ~ model3_eval))$r.squared,
+    summary(lm(y_true_winsor ~ kitchen_sink_model_winsor_eval))$r.squared,
+    summary(lm(y_true_imputed ~ kitchen_sink_model_imputed_eval))$r.squared
+  )
+)
+
+print(metrics)
+```
+
+Now, let's run model3 against the unknown data to generate predictions. The prediction data is stored under the variable "prediction_data_winsor". We will scale the data and run the model to generate predictions.
+
+```{r}
+independent_vars_w <- setdiff(names(prediction_data_winsor), "Wins")
+prediction_data_winsor[, independent_vars_w] <- scale(prediction_data_winsor[, independent_vars_w])
+```
+
+```{r}
+model3_predictions <- predict(model3, newdata = prediction_data_winsor)
+```
+
+```{r}
+print(model3_predictions)
+```
+
+
+
+
+

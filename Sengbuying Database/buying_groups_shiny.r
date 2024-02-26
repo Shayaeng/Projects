@@ -52,6 +52,7 @@ server <- function(input, output) {
      })
   })
 
+
   observeEvent(input$submit, {
     order_number <- input$order_number
     tracking_number <- input$tracking_number
@@ -61,9 +62,9 @@ server <- function(input, output) {
         field <- input$field_selection
         if (!is.null(field)) {
           value <- input$new_value
-          value <- ifelse(value == "NULL", "NULL", sprintf("'%s'", value))
-          order_number <- ifelse(order_number == "NULL", "NULL", sprintf("'%s'", order_number))
-          tracking_number <- ifelse(tracking_number == "NULL", "NULL", sprintf("'%s'", tracking_number))
+          value <- ifelse(value == "NULL", "NULL", value)
+          order_number <- ifelse(order_number == "NULL", "NULL", order_number)
+          tracking_number <- ifelse(tracking_number == "NULL", "NULL", tracking_number)
 
           query <- glue::glue("UPDATE orders SET {field} = ? WHERE order_number = ? OR tracking_number = ?")
           print(query)
