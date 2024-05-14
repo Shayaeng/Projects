@@ -1,0 +1,474 @@
+---
+title: "Final - modeling"
+author: "Gavriel Steinmetz-Silber"
+date: "2024-05-08"
+output: html_document
+---
+
+
+
+```{r}
+library(arrow)
+```
+
+
+```{r}
+#train_data_transformed = read_parquet("C:/Users/shaya/OneDrive/Documents/repos/DATA621_Group/Final_Project/train_data_transformed.parquet")
+#test_data_transformed = read_parquet("C:/Users/shaya/OneDrive/Documents/repos/DATA621_Group/Final_Project/test_data_transformed.parquet")
+#train_data_transformed <- read_parquet("C:/Users/shaya/Downloads/train_data_transformed.parquet")
+train_data_transformed <- read_parquet("C:/Users/shaya/OneDrive/Documents/repos/DATA621_Group/Final_Project/data_temp/train_data_transformed.parquet")
+test_data_transformed <- read_parquet("C:/Users/shaya/OneDrive/Documents/repos/DATA621_Group/Final_Project/data_temp/test_data_transformed.parquet")
+
+```
+
+
+```{r}
+library(tidyverse)
+library(janitor)
+library(knitr)
+library(kableExtra)
+library(latex2exp)
+library(psych)
+library(scales)
+library(stringr)
+library(ggcorrplot)
+library(ggmice)
+library(caret)
+library(mice)
+library(bestNormalize)
+library(e1071)
+library(diptest)
+library(MASS)
+library(arrow)
+library(summarytools)
+library(weathermetrics)
+library(lubridate)
+```
+```{r}
+names(train_data_transformed)
+```
+
+
+# Modeling
+
+We consider the use of splines. At first pass, splines are highly appropriate for this dataset, since rider behavior likely changes dramatically across the range of certain predictors ()
+
+```{r}
+ggplot(train_data_transformed, aes(x = temp_deg_f_transformed, y = member_casual)) +
+  geom_hex(bins = 30) +  
+  ggtitle("Hex Bin Plot of Predictor vs. Target") +
+  xlab("Predictor") +
+  ylab("Target") +
+  scale_fill_gradient(low = "white", high = "blue")
+```
+```{r}
+ggplot(train_data_transformed, aes(x = total_precip_transformed, y = member_casual)) +
+  geom_hex(bins = 30) +  
+  ggtitle("Hex Bin Plot of Predictor vs. Target") +
+  xlab("Predictor") +
+  ylab("Target") +
+  scale_fill_gradient(low = "white", high = "blue")
+```
+
+
+So as expected, the use of splines in this context does not seem appropriate, *however*, they may well be likely to be useful. Let us begin, then, with an even simpler model. 
+
+First, however, we need to make sure our categorical variables are defined as such. We also want a variable with time of day.
+
+```{r}
+train_data_transformed$rideable_type <- as.factor(train_data_transformed$rideable_type)
+test_data_transformed$rideable_type <- as.factor(test_data_transformed$rideable_type)
+train_data_transformed$member_casual <- as.factor(train_data_transformed$member_casual)
+test_data_transformed$member_casual <- as.factor(test_data_transformed$member_casual)
+train_data_transformed$day_of_week <- factor(train_data_transformed$day_of_week, ordered = FALSE)
+test_data_transformed$day_of_week <- factor(test_data_transformed$day_of_week, ordered = FALSE)
+
+
+
+train_data_transformed$hour <- hour(train_data_transformed$datetime_ny)
+test_data_transformed$hour <- hour(test_data_transformed$datetime_ny)
+
+
+```
+
+```{r}
+categorize_time_of_day <- function(hour) {
+  if (hour >= 4 && hour < 8) {
+    "Early Morning"
+  } else if (hour >= 8 && hour < 12) {
+    "Morning"
+  } else if (hour >= 12 && hour < 16) {
+    "Afternoon"
+  } else if (hour >= 16 && hour < 20) {
+    "Evening"
+  } else {
+    "Night"
+  }
+}
+
+train_data_transformed$time_of_day <- sapply(train_data_transformed$hour, categorize_time_of_day)
+train_data_transformed$time_of_day <- as.factor(train_data_transformed$time_of_day)
+
+test_data_transformed$time_of_day <- sapply(test_data_transformed$hour, categorize_time_of_day)
+test_data_transformed$time_of_day <- as.factor(test_data_transformed$time_of_day)
+
+```
+
+
+Now, we do want to use k-fold cross-validation. Logistic regression is pretty quick, but the datast is large so we will use 5 folds.
+
+One thing to note is that our classes are highly imbalanced:
+
+```{r}
+print(table(train_data_transformed$member_casual))
+```
+
+We could use under or oversampling to address this. Because our dataset is so large, let's use undersampling:
+
+```{r}
+library(ROSE)
+set.seed(7)  
+data_balanced <- ovun.sample(member_casual ~ ., data = train_data_transformed, method = "under", 
+                             N = 2 * table(train_data_transformed$member_casual)["casual"],
+                             seed = 7)$data
+
+print(table(data_balanced$member_casual))
+```
+
+
+And now we leverage the training control to train the model. Note, our metric is ROC, because we want to know how well the model can discriminate between the outcomes across various thresholds. 
+
+If this model is a means to an end (i.e another model), it's crucial that we have a strong sense of what features are correlated in what ways to members vs. casual users.
+
+```{r}
+set.seed(7) 
+train_control <- trainControl(
+  method = "cv",
+  number = 5,
+  savePredictions = "final",
+  classProbs = TRUE,  # store probabilities for calculations later on
+  summaryFunction = twoClassSummary
+)
+
+simple_model <- train(
+  member_casual ~ rideable_type + temp_deg_f_transformed +
+    rel_humidity_transformed + total_precip_transformed +
+    wind_speed_transformed + day_of_week + usage_time_transformed +
+    est_distance_transformed + time_of_day,
+  data = data_balanced,
+  method = "glm",
+  family = binomial(),
+  trControl = train_control,
+  metric = "ROC"
+)
+
+print(simple_model)
+```
+```{r}
+summary(simple_model)
+```
+
+
+At first pass, this looks pretty bad But it's worth noting that the model on the full data had a sensitivity of 0.0292 and a specificity of  0.99714 (with a similar ROC to this model). So it really wasn't all that meaningful--this model does better in that important regard.
+
+Before we analyze too much, though, lets take a look at multicollinearity. We are especially concerned that electric bike users may be more likely to ride farther and at night (we speak from personal experience).
+
+```{r}
+library(car)
+extracted_simple_model = simple_model$finalModel
+vif(extracted_simple_model)
+```
+
+And indeed, there is multicolllinearity although not exactly the type we expected. But, of course, electric bike riders travel farther distances. Let's remove the distance variable and try again. That may well reduce the VIF of usage time quite significantly.
+
+```{r}
+simple_model2 <- train(
+  member_casual ~ rideable_type + temp_deg_f_transformed +
+    rel_humidity_transformed + total_precip_transformed +
+    wind_speed_transformed + day_of_week + usage_time_transformed +
+    time_of_day,
+  data = data_balanced,
+  method = "glm",
+  family = binomial(),
+  trControl = train_control,
+  metric = "ROC"
+)
+
+print(simple_model2)
+```
+
+The ROC, sensitivity, and specificity results are quite similar to the previous model. This is comforting--we did not lose much despite dropping a predictor. We again check for multicolllinearity:
+
+```{r}
+extracted_simple_model2 = simple_model2$finalModel
+vif(extracted_simple_model2)
+```
+And indeed, the usage time variable is no longer problematic. Now, we can evaluate this model a bit more rigorously:
+
+```{r}
+summary(extracted_simple_model2)
+```
+
+First, using an electric bike increases the log odds of being a member by approximately 0.424 compared to using a regular bike. It's worth emphasizing--this does not indicate a causal relationship. For example, electric bikes might be especially expensive for casual users. But the correlation is clearly there. Onwards, for every one-unit increase in the transformed temperature, the log odds of being a member increase by approximately 0.103. Now, possibly on nicer days, members are quicker to think of biking as an activity. We skip ahead to the next (in our opinion) interesting results.  Weekends have much higher odds of being a member. This is a very interesting result, and the marketing department can likely leverage this information to convert more casual users to memberships. Other interesting coefficients include members have longer usage times--again, potentially information that can be leveraged depending on business goals. And, all times listed show lower odds of being a member (compared to the afternoon). This is especially the case with the early morning, with a highly negative coefficient--perhaps those going to work quite early tend to not have memberships.
+
+Now, this model used a 0.5 threshold for predictions, but that may not always be the optimal threshold:
+
+```{r}
+library(pROC)
+predictions <- predict(simple_model2, data_balanced, type = "prob")[, "member"]
+roc_obj <- roc(response = data_balanced$member_casual, predictor = predictions)
+
+plot(roc_obj, main = "ROC Curve", col = "blue")
+
+sens_spec <- coords(roc_obj, x = "all", ret = c("threshold", "sensitivity", "specificity"), transpose = FALSE)
+plot(sens_spec$threshold, sens_spec$sensitivity, type = "l", col = "blue", lwd = 2, xlab = "Threshold", ylab = "Metric Value", ylim = c(0, 1), main = "Sensitivity and Specificity vs. Threshold")
+lines(sens_spec$threshold, sens_spec$specificity, type = "l", col = "red", lwd = 2)
+legend("bottomleft", legend = c("Sensitivity", "Specificity"), col = c("blue", "red"), lty = 1, cex = 0.8)
+
+
+```
+This plot allows us to see the different trade-offs which can shape our selection of threshold (depending on the use case). For now, if we just want to see the factors that make someone more likely to be a casual user, we are content to analyze our model as is. Later, if we want to make predictions and to beware of making certain errors, we can adjust the threshold accordingly.
+
+Let's see how this model does on the test data:
+
+```{r}
+predicted_probs <- predict(simple_model2, newdata = test_data_transformed, type = "prob")
+
+threshold = 0.5 # we can change this
+predicted_classes <- ifelse(predicted_probs[, "member"] > threshold, "member", "casual")
+
+
+# just to make sure they are factors with same levels
+predicted_classes <- factor(predicted_classes, levels = c("casual", "member"))
+test_data_transformed$member_casual <- factor(test_data_transformed$member_casual, levels = c("casual", "member"))
+
+
+confusionMatrix(data = predicted_classes, reference = test_data_transformed$member_casual)
+
+roc_result <- roc(response = test_data_transformed$member_casual, predictor = as.numeric(predicted_classes))
+plot(roc_result)
+auc(roc_result)
+
+
+```
+
+At first pass, the model performed decently, seemingly generalizing well and having an overall accuracy rate of around 0.65. However, the no-information rate is 0.84 which means that we'd have a higher accuracy by just guessing the majority class every time! The model isn't useless; the negative predictive value, for example is fairly high at 0.91 which means that the model is much more reliable when it comes to predicting "member." Still, let us aim to build a better classifier than this one.
+
+## Part 2 
+
+In the previous section we built classifiers to predict which users are casual users versus members. The first model we built was a binary logistic model. The model itself had major shortcomings, as discussed, but we were able to recognize some variables that were especially predictive of casual versus member users. Let's discuss two of them in particular.
+
+1. rideable_type. Using an electric bike increases the log odds of being a member compared to using a regular bike. As discussed, this is likely due to the pricing around electric bikes--they are especially expensive for casual users. 
+2. usage_time_transformed. Longer usage times likewise increase the log odds of being a member. This may be because members pay for a subscription, and so they more readily consider bikes as a commute option
+
+Both of these results are quite intuitive, and they also present a business opportunity. This is to say, we've identified "member behavior" or at least two aspects of it. Therefore, if we could identify *when* casual members are more likely to exhibit this "member behavior," then we could also focus our marketing efforts on those very times. For example, suppose people are more likely to use e-bikes when it's a pleasant temperature. Well then we could send out special deals right as the temperature is getting to be pleasant. In short, by figuring out when casual users act like members, we can more readily convert them to actually become members. 
+
+The first step, then, is to look at only the casual members:
+
+```{r}
+casual_train_data <- train_data_transformed %>%
+  filter(member_casual == "casual")
+
+casual_test_data <- test_data_transformed %>%
+  filter(member_casual == "casual")
+```
+
+
+
+
+```{r}
+ggplot(casual_train_data, aes(x = temp_deg_f_transformed, fill = rideable_type)) +
+  geom_histogram(position = "identity", alpha = 0.6, bins = 30) +
+  labs(x = "Transformed Temperature", y = "Count", title = "Temperature Distribution by Bike Type") +
+  scale_fill_manual(values = c("blue", "red"), labels = c("Classic Bike", "Electric Bike")) +
+  theme_minimal()
+
+```
+
+For precipitation, we need to fix the transformation because it's still highly skewed and there are negative values
+```{r}
+casual_train_data <- casual_train_data %>%
+  mutate(total_precip_transformed = log1p(total_precip_transformed - min(total_precip_transformed) + 0.01))
+
+min_precip_train <- min(casual_train_data$total_precip_transformed, na.rm = TRUE)
+casual_test_data <- casual_test_data %>%
+  mutate(total_precip_transformed = log1p(total_precip_transformed - min_precip_train + 0.01))
+
+```
+
+
+```{r}
+ggplot(casual_train_data, aes(x = total_precip_transformed, fill = rideable_type)) +
+  geom_histogram(position = "identity", alpha = 0.6, bins = 30) +
+  labs(x = "Transformed Precipitation", y = "Count", title = "Precipitation Distribution by Bike Type") +
+  scale_fill_manual(values = c("blue", "red"), labels = c("Classic Bike", "Electric Bike")) +
+  xlim(0, 2) +
+  ylim(0, 1000)
+  theme_minimal()
+
+```
+
+
+
+```{r}
+summary_stats <- casual_train_data %>%
+  group_by(rideable_type) %>%
+  summarise(
+    Count = n(),
+    Mean_Temp = mean(temp_deg_f_transformed, na.rm = TRUE),
+    Median_Temp = median(temp_deg_f_transformed, na.rm = TRUE),
+    SD_Temp = sd(temp_deg_f_transformed, na.rm = TRUE),
+    Mean_Precip = mean(total_precip_transformed, na.rm = TRUE),
+    Median_Precip = median(total_precip_transformed, na.rm = TRUE),
+    SD_Precip = sd(total_precip_transformed, na.rm = TRUE)
+  )
+
+print(summary_stats)
+```
+So we do see different patterns for these two variables, with users actually using e-bikes at higher temperatures and greater precipitation. This is probably so that they can get to their destination quicker when it's uncomfortable out. 
+
+```{r}
+# Sample 10% of the data
+sampled_data <- casual_train_data %>%
+  dplyr::sample_frac(size = 0.1)
+
+# Now plot using the sampled data
+ggplot(sampled_data, aes(x = temp_deg_f_transformed, y = as.numeric(rideable_type))) +
+    geom_point(alpha = 0.3) +
+    geom_smooth(method = "gam", formula = y ~ s(x), color = "red") +
+    labs(title = "Relationship between Transformed Temperature and Rideable Type",
+         x = "Transformed Temperature", y = "Probability of Choosing Electric Bike")
+
+```
+
+It's quite subtle but it appears that the likelihood of using an e-bike drops as the temperature rises at first, then plateaus, and at the very end rises as the temperatures increase. This is consistent with our hypothesis that people are more prone to using e-bikes in uncomfortable and suggests we should use splines in our model.
+
+We now use the gam() function to build a model that includes a spline for temp_deg_f_transformed. First, we again undersample:
+
+```{r}
+casual_balanced <- ovun.sample(rideable_type ~ ., data = casual_train_data, method = "under", 
+                             N = 2 * 87260, 
+                             seed = 7)$data
+```
+
+
+
+
+```{r}
+library(mgcv)
+
+gam1 <- gam(rideable_type ~ s(temp_deg_f_transformed, bs = "cs") +
+                                    rel_humidity_transformed + total_precip_transformed +
+                                    wind_speed_transformed + day_of_week +
+                                    est_distance_transformed + time_of_day,
+                    family = binomial(), data = casual_balanced)
+
+summary(gam1)
+
+
+```
+
+
+
+Let's try LDA. However, as noted in the textbook, it becomes much harder to understand LDA when there are many features. As such, we will only select some features, based on the results of the GAM model. Those features are: est_distance_transformed, time_of_day, day_of_week, temp_deg_f_transformed, total_precip_transformed.
+
+```{r}
+train_control <- trainControl(
+  method = "cv", 
+  number = 10,   
+  savePredictions = "final",
+  classProbs = TRUE  
+)
+
+```
+
+
+```{r}
+lda_model <- train(
+  rideable_type ~ est_distance_transformed + time_of_day + temp_deg_f_transformed + total_precip_transformed,
+  data = casual_balanced, 
+  method = "lda",
+  trControl = train_control  
+)
+
+```
+
+
+
+```{r}
+print(lda_model)
+summary(lda_model)
+
+
+```
+
+```{r}
+final_lda_model <- lda_model$finalModel
+
+print(final_lda_model)
+summary(final_lda_model)
+```
+
+
+```{r}
+# calculate LDA scores
+lda_scores <- predict(lda_model, casual_test_data, type = "prob")
+
+# Add the scores to your data frame
+casual_test_data$score <- lda_scores
+
+# Create the histogram
+library(ggplot2)
+ggplot(casual_test_data, aes(x = score, fill = rideable_type)) +
+  geom_histogram(position = "identity", alpha = 0.5, bins = 30) +
+  labs(x = "LDA Score", y = "Frequency") +
+  scale_fill_manual(values = c("blue", "red")) +
+  theme_minimal()
+```
+
+```{r}
+# calculate LDA scores
+lda_scores <- predict(lda_model, casual_test_data, type = "prob")
+
+# Add the scores to your data frame
+casual_test_data$score <- lda_scores$electric_bike # assuming 'electric_bike' is the class you're interested in
+
+# Create the histogram
+library(ggplot2)
+ggplot(casual_test_data, aes(x = score, fill = rideable_type)) +
+  geom_histogram(position = "identity", alpha = 0.5, bins = 15) +
+  labs(x = "LDA Score", y = "Frequency") +
+  scale_fill_manual(values = c("blue", "red")) +
+  theme_minimal()
+```
+
+```{r}
+# Assuming 'bike_type' is the column in your test data with actual classes
+actual_classes <- casual_test_data$rideable_type
+
+# Calculate the number of correctly predicted instances
+correct_predictions <- sum(lda_scores == actual_classes)
+
+# Calculate the accuracy
+accuracy <- correct_predictions / length(actual_classes)
+
+# Print the accuracy
+print(paste("Accuracy: ", accuracy))
+```
+
+```{r}
+rideable_type <- casual_test_data$rideable_type
+
+# Create a data frame with lda_scores and rideable_type
+data <- data.frame(lda_scores, rideable_type)
+
+# Plot the histogram
+ggplot(data, aes(x=lda_scores, fill=rideable_type)) +
+  geom_bar(position="dodge") +
+  labs(x="LDA Scores", y="Frequency") +
+  theme_minimal() +
+  scale_fill_brewer(palette="Set1") +
+  guides(fill=guide_legend(title="Rideable Type"))
+```
+
+# Note about who (or in what situation) it would be best to target casual users

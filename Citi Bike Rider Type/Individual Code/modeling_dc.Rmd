@@ -1,0 +1,331 @@
+---
+title: "Modeling"
+author: "Daniel Craig, John Cruz, Shaya Engelman, Noori Selina, Gavriel Steinmetz-Silber"
+date: "2024-04-23"
+output:
+  pdf_document: default
+  html_document:
+    code_folding: hide
+urlcolor: blue
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=FALSE, warning=FALSE, message = FALSE)
+```
+
+## Required Libraries
+
+```{r library,include = TRUE, class.source = "fold-show", message=FALSE}
+library(tidyverse)
+library(janitor)
+library(knitr)
+library(kableExtra)
+library(latex2exp)
+library(psych)
+library(scales)
+library(stringr)
+library(ggcorrplot)
+library(ggmice)
+library(caret)
+library(mice)
+library(bestNormalize)
+library(e1071)
+library(diptest)
+library(MASS)
+library(arrow)
+library(summarytools)
+library(weathermetrics)
+library(lubridate)
+library(dplyr)
+```
+
+
+```{r}
+# train_data_transformed$rideable_type <- as.factor(train_data_transformed$rideable_type)
+# test_data_transformed$rideable_type <- as.factor(test_data_transformed$rideable_type)
+# train_data_transformed$member_casual <- as.factor(train_data_transformed$member_casual)
+# test_data_transformed$member_casual <- as.factor(test_data_transformed$member_casual)
+# train_data_transformed$hour <- hour(train_data_transformed$datetime_ny)
+# test_data_transformed$hour <- hour(test_data_transformed$datetime_ny)
+```
+
+```{r}
+# categorize_time_of_day <- function(hour) {
+#   if (hour >= 4 && hour < 8) {
+#     'Early Morning'
+#   } else if (hour >= 8 && hour < 12) {
+#     "Morning"
+#   } else if (hour >= 12 && hour < 16) {
+#     "Afternoon"
+#   } else if (hour >= 16 && hour < 20) {
+#     "Evening"
+#   } else {
+#     "Night"
+#   }
+# }
+# train_data_transformed$time_of_day <- sapply(train_data_transformed$hour, categorize_time_of_day)
+# train_data_transformed$time_of_day <- as.factor(train_data_transformed$time_of_day)
+# test_data_transformed$time_of_day <- sapply(test_data_transformed$hour, categorize_time_of_day)
+# test_data_transformed$time_of_day <- as.factor(test_data_transformed$time_of_day)
+# 
+# train_real <- train_data_transformed %>% dplyr::select(!c(model_name, coordinates_lat_lon,started_at, ended_at, start_station_id,end_station_id,est_distance, datetime_ny,datetime_utc,model_elevation_surface, utc_offset_hrs, est_distance_transformed,usage_time))
+# 
+# test_real <- test_data_transformed %>% dplyr::select(!c(model_name, coordinates_lat_lon,started_at, ended_at, start_station_id,end_station_id,est_distance, datetime_ny,datetime_utc,model_elevation_surface, utc_offset_hrs, est_distance_transformed,usage_time))
+# 
+# 
+# train_index_sample <- createDataPartition(y = train_real$member_casual, p = 0.1, list = FALSE, times = 1)
+# train_sample <- train_real[train_index_sample, ]
+# 
+# test_index_sample <- createDataPartition(y = test_real$member_casual, p = 0.1, list = FALSE, times = 1)
+# 
+# test_sample <- test_real[test_index_sample,]
+# 
+# write.csv(test_sample,"test_sample.csv")
+# write.csv(train_sample, "train_sample.csv")
+# 
+#  
+# sample_data <- function(data) {
+#   n_member <- sum(data$member_casual == 'member')
+#   n_casual <- sum(data$member_casual == 'casual')
+#   n_total <- count(data)
+#   p_member <- round(n_member/n_total, 2)
+#   p_casual <- round(n_casual/n_total, 2)
+#   num_.10_total <- round(n_total*.10)
+#    
+#   n_samp_mem <- round(num_.10_total*p_member)
+#   n_samp_casual <- round(num_.10_total*p_casual)
+#    
+#   print(paste0("Number of Members in Total: ", n_member, " Percent of Members: ", p_member))
+#   print(paste0("Number of Casuals in Total: ", n_casual, " Percent of Casuals: ", p_casual))
+#   print(paste0("Number of Total: ", n_total, " 10%: ", num_.10_total))
+#   print(paste0("Number of Members to Sample: ", n_samp_mem))
+#   print(paste0("Number of Casuals to Sample: ", n_samp_casual))
+#    
+
+#return sample_data
+#}
+ 
+#sample_data(train_sample)
+
+# [1] "Number of Members in Total: 691155 Percent of Members: 0.84"
+# [1] "Number of Casuals in Total: 127925 Percent of Casuals: 0.16"
+# [1] "Number of Total: 819080 10%: 81908"
+# [1] "Number of Members to Sample: 68803"
+# [1] "Number of Casuals to Sample: 13105"
+```
+
+
+
+Modeling:
+
+The simple logistic regression models created thus far exclude the inclusion of station names due to their size and difficulty in management. A boosting logistic regression model is chosen to attempt using the different station names as categorical variables to see if their inclusion would improve accuracy. Due to the size of the data, a smaller stratified sample was created to reduce processing time. The stratified sample keeps the same ratio of under-observed casual records to the over-observed member records.
+
+To help deal with the imbalanced dataset, class weights of .9 and .1 were used for casual and members respectively.
+
+```{r, warnings = FALSE, messages = FALSE}
+train_sample <- read_csv("train_sample.csv")
+test_sample <- read_csv("test_sample.csv")
+
+#usage_time_transformed
+#temp_deg_f_trans
+#rel_humidity_trans
+#total_precip_transformed
+#wind_speed_transformed
+# 
+
+# Below is code that removes all the variables that cause the models to take hours to train which are made available if more time is found for them
+
+#
+# train_sample_m2 <- train_sample %>% dplyr::select(rideable_type, start_lat, start_lng, end_lat, end_lng, member_casual, temperature_deg_c, dewpoint_temperature_deg_c, total_cloud_cover_0_1,day_of_week,usage_time_transformed,temp_deg_f_transformed,rel_humidity_transformed,total_precip_transformed,wind_speed_transformed, hour, time_of_day)
+# 
+# train_sample_m2$time_of_day <- as.factor(train_sample_m2$time_of_day)
+# train_sample_m2$day_of_week <- as.factor(train_sample_m2$day_of_week)
+# train_sample_m2$member_casual <- as.factor(train_sample_m2$member_casual)
+# train_sample_m2$rideable_type <- as.factor(train_sample_m2$rideable_type)
+# 
+# 
+# test_sample_m2 <- test_sample %>% dplyr::select(rideable_type, start_lat, start_lng, end_lat, end_lng, member_casual, temperature_deg_c, dewpoint_temperature_deg_c, total_cloud_cover_0_1,day_of_week,usage_time_transformed,temp_deg_f_transformed,rel_humidity_transformed,total_precip_transformed,wind_speed_transformed, hour, time_of_day)
+# 
+# test_sample_m2$time_of_day <- as.factor(test_sample_m2$time_of_day)
+# test_sample_m2$day_of_week <- as.factor(test_sample_m2$day_of_week)
+# test_sample_m2$member_casual <- as.factor(test_sample_m2$member_casual)
+# test_sample_m2$rideable_type <- as.factor(test_sample_m2$rideable_type)
+
+```
+
+```{r}
+# Due to messy data prep, the first model was trained on these columns.
+
+train_sample_m1 <- train_sample %>% dplyr::select(rideable_type,start_station_name,end_station_name,start_lat,start_lng,end_lat,end_lng,member_casual,dewpoint_temperature_deg_c,total_cloud_cover_0_1,rel_humidity,day_of_week,usage_time_transformed,temp_deg_f_transformed, wind_speed_transformed,hour,time_of_day)
+
+test_sample_m1 <- test_sample %>% dplyr::select(rideable_type,start_station_name,end_station_name,start_lat,start_lng,end_lat,end_lng,member_casual,dewpoint_temperature_deg_c,total_cloud_cover_0_1,rel_humidity,day_of_week,usage_time_transformed,temp_deg_f_transformed, wind_speed_transformed,hour,time_of_day)
+
+test_sample_m1 <- test_sample_m1 %>% filter(!(start_station_name == 'Baldwin at Montgomery' | start_station_name == 'Brooklyn Ave & Tilden Ave' | end_station_name == 'Clinton St & Newark St' | end_station_name == 'Dey St')) #removing these four observations since the train dataset did not contain these levels and when predicting on these records, the model fails
+
+```
+
+
+```{r}
+# DO NOT RUN THE BELOW CODE --- it takes 5 - 6 hours to train this model 
+
+#
+# preprocess_steps <- c("nzv", "corr")
+# 
+# preprocess_obj <- preProcess(train_sample_m1[, -which(names(train_sample_m1) == "member_casual")], method = preprocess_steps)
+# 
+# train_preprocessed <- predict(preprocess_obj, train_sample_m1)
+# test_preprocessed <- predict(preprocess_obj, test_sample_m1)
+# 
+# model_weights <- train(
+#   member_casual ~ .,
+#   data = train_preprocessed,
+#   method = "LogitBoost",
+#   trControl = trainControl(method = "cv", number = 5, classProbs = TRUE),
+#   weights = ifelse(train_preprocessed$member_casual == "casual", .9, .1),
+#   importance = TRUE
+# )
+
+
+model_weights <- readRDS("LogitBoost_weights.rds")
+summary(model_weights)
+predictions <- predict(model_weights, newdata = test_preprocessed)
+confusionMatrix(predictions, as.factor(test_preprocessed$member_casual))
+
+
+#saveRDS(model_spec, "LogitBoost_weights.rds")
+#model_weights <- readRDS("LogitBoost_weights.rds")
+
+```
+  While the model seems to be performing well with an 84% accuracy rate, if you take a closer look the Sensitivity and and Balanced Accuracy are quite low at .05 and .52. Using class weights and the inclusion of Station Names did not seem to improve the boosted logistic model compared to the simplified logistic model.
+
+
+```{r}
+# Load the necessary libraries
+library(caret)
+library(pROC)
+
+# Assuming your training and testing datasets are already loaded as "train_sample" and "test_sample"
+# and you have trained your logistic regression model as "model_spec"
+
+# Make predictions on the testing dataset
+predictions <- predict(model_weights, newdata = test_sample_m1, type = "prob")
+
+# Extract the predicted probabilities for the positive class
+predicted_probs <- predictions[, "casual"]  # Assuming "casual" is the positive class
+
+# Create the ROC curve
+roc_obj <- roc(test_sample_m1$member_casual, predicted_probs)
+
+# Plot the ROC curve
+plot(roc_obj, main = "ROC Curve", print.auc = TRUE, auc.polygon = TRUE, grid = TRUE, col = "blue", lwd = 2)
+```
+The ROC Curve shows a very disappointing metric of 38%. To gain marginal increases in predicting "casual"  (increase in Sensitivity), massive increases in incorrectly labeling "members" (drop in Specificity) is required.
+
+```{r}
+library(readr)
+
+# Commented out since it takes a hot minute
+#smote_train <- smote(member_casual ~ ., train_sample_m2, perc.over = 5,perc.under=1)
+
+#write_csv(smote_train,'smote_train_sample_for_RF_model.csv')
+
+smote_train <- read_csv('smote_train_sample_for_RF_model.csv')
+
+smote_train$time_of_day <- as.factor(smote_train$time_of_day)
+smote_train$day_of_week <- as.factor(smote_train$day_of_week)
+smote_train$member_casual <- as.factor(smote_train$member_casual)
+smote_train$rideable_type <- as.factor(smote_train$rideable_type)
+
+```
+
+
+```{r}
+preprocess_obj_rf <- preProcess(smote_train[, -which(names(smote_train) == "member_casual")], method = preprocess_steps)
+
+# Apply the preprocessing to the training and testing datasets
+train_preprocessed_rf <- predict(preprocess_obj_rf, smote_train)
+test_preprocessed_rf <- predict(preprocess_obj_rf, test_sample_m2 )
+
+grid_RF <- expand.grid(mtry = seq(7,17, by = 2))
+
+rf_control <- trainControl(method='repeatedcv', 
+                        number=5, 
+                        repeats=3)
+
+# Create the model specification with class weights and boosting
+model_SMOTE <- train(
+  member_casual ~ .,
+  data = train_preprocessed_rf,
+  method = "rf",
+  trControl = rf_control,
+  tuneGrid = grid_RF,
+  importance = TRUE
+)
+
+summary(model_SMOTE)
+```
+
+```{r Tree Plot}
+#https://www.r-bloggers.com/2017/03/plotting-trees-from-random-forest-models-with-ggraph/
+library(randomForest)
+library(dplyr)
+library(ggraph)
+library(igraph)
+
+tree_func <- function(final_model, 
+                      tree_num) {
+  
+  # get tree by index
+  tree <- randomForest::getTree(final_model, 
+                                k = tree_num, 
+                                labelVar = TRUE) %>%
+    tibble::rownames_to_column() %>%
+    # make leaf split points to NA, so the 0s won't get plotted
+    mutate(`split point` = ifelse(is.na(prediction), `split point`, NA))
+  
+  # prepare data frame for graph
+  graph_frame <- data.frame(from = rep(tree$rowname, 2),
+                            to = c(tree$`left daughter`, tree$`right daughter`))
+  
+  # convert to graph and delete the last node that we don't want to plot
+  graph <- graph_from_data_frame(graph_frame) %>%
+    delete_vertices("0")
+  
+  # set node labels
+  V(graph)$node_label <- gsub("_", " ", as.character(tree$`split var`))
+  V(graph)$leaf_label <- as.character(tree$prediction)
+  V(graph)$split <- as.character(round(tree$`split point`, digits = 2))
+  
+  # plot
+  plot <- ggraph(graph, 'dendrogram') + 
+    theme_bw() +
+    geom_edge_link() +
+    geom_node_point() +
+    geom_node_text(aes(label = node_label), na.rm = TRUE, repel = TRUE) +
+    geom_node_label(aes(label = split), vjust = 2.5, na.rm = TRUE, fill = "white") +
+    geom_node_label(aes(label = leaf_label, fill = leaf_label), na.rm = TRUE, 
+                    repel = TRUE, colour = "white", fontface = "bold", show.legend = FALSE) +
+    theme(panel.grid.minor = element_blank(),
+          panel.grid.major = element_blank(),
+          panel.background = element_blank(),
+          plot.background = element_rect(fill = "white"),
+          panel.border = element_blank(),
+          axis.line = element_blank(),
+          axis.text.x = element_blank(),
+          axis.text.y = element_blank(),
+          axis.ticks = element_blank(),
+          axis.title.x = element_blank(),
+          axis.title.y = element_blank(),
+          plot.title = element_text(size = 18))
+  
+  print(plot)
+}
+
+
+tree_num <- which(model_SMOTE$finalModel$forest$ndbigtree == min(model_SMOTE$finalModel$forest$ndbigtree))
+
+tree_func(final_model = model_SMOTE$finalModel, tree_num)
+
+model_SMOTE$finalModel$forest
+```
+

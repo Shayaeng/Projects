@@ -1,0 +1,477 @@
+---
+title: "Citi Bike Users"
+author: "Daniel Craig, John Cruz, Shaya Engelman, Noori Selina, Gavriel Steinmetz-Silber"
+date: "2024-04-23"
+output:
+  pdf_document: default
+  html_document:
+    code_folding: hide
+urlcolor: blue
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=FALSE, warning=FALSE, message = FALSE)
+```
+
+## Required Libraries
+
+```{r library,include = TRUE, class.source = "fold-show", message=FALSE}
+library(tidyverse)
+library(janitor)
+library(knitr)
+library(kableExtra)
+library(latex2exp)
+library(psych)
+library(scales)
+library(stringr)
+library(ggcorrplot)
+library(ggmice)
+library(caret)
+library(mice)
+library(bestNormalize)
+library(e1071)
+library(diptest)
+library(MASS)
+library(arrow)
+library(summarytools)
+library(weathermetrics)
+library(lubridate)
+```
+
+
+## Introduction
+
+[Citi Bike](https://en.wikipedia.org/wiki/Citi_Bike), owned by Lyft, is a privately owned public bicycle sharing system serving the New York City boroughs of the Bronx, Brooklyn, Manhattan, and Queens, as well as Jersey City and Hoboken, New Jersey. They provide an [open data](https://citibikenyc.com/system-data) platform that gives people access to some of their system data of how users use their services. This includes station information, latitude and longitude, and ride types. Our goal is to investigate and classify which type of trips are done by members versus casual users. If we can predict trips that we expected members to use, but they are casual users, we can provide opportunities to promote an upgrade to a membership tier given their recent ride. 
+
+We also obtained hourly weather data to include for each ride. This was downloaded via [Oikolab's](https://oikolab.com/) API. It includes temperature, precipitation, humidity and wind speed. 
+
+## Data Exploration {.tabset}
+
+### Import Data 
+
+The data was initially in multiple zipped CSV files. Due to the large nature of these files, the data will be converted to parquet for easier use. It is also important to note that we are only using March 2024 data as these files are around 1 GB and computational space needs to be considered. 
+
+```{r convert-files, warning=FALSE, message=FALSE}
+# Convert to parquet
+
+# library(dplyr)
+# library(readr)
+# 
+# df <- list.files(path = "data/", full.names = TRUE, pattern = "\\.csv$") %>%
+#   lapply(read_csv) %>%
+#   lapply(\(x) mutate(x, across(end_station_id, as.character))) %>%
+#   bind_rows
+# 
+# write_parquet(df, "citi_bike_03_2024.parquet")
+```
+
+
+```{r import-data, echo=FALSE}
+trips <- read_parquet("citi_bike_03_2024.parquet")
+head(trips)
+```
+
+### About the Data
+
+```{r data-glance, echo=FALSE}
+kbl(head(trips)) |>
+  kable_classic(full_width = F, html_font = "Cambria") |>
+  footnote(general_title = "Dimensions: ",
+          TeX(paste0(nrow(trips), " x ", ncol(trips)))) %>%
+  kable_styling(latex_options = "HOLD_position")
+```
+
+The dataset has 2,737,881 records (rows) with thirteen (13) variables. We can drop the `ride_id` as it does not provide any meaningful information. 
+
+**Trips Predictor Variables**
+
+- `rideable_type:` type of bike rented (electric or classic)
+- `started_at:` datetime rental was taken from the station
+- `ended_at:` datetime rental was returned to a station
+- `start_station_name:` bike taken from station
+- `start_station_id:`
+- `end_station_name:` bike returned to station
+- `end_station_id:`  
+- `start_lat:` starting station latitude
+- `start_lng:` starting station longitude 
+- `end_lat:` ending station latitude 
+- `end_lng:` ending station longitude 
+
+**Response Variable**
+
+- `member_casual:` whether the rental was used by a member or casual (one-time rental) user. We will encode 1 as member and 0 as casual. 
+
+### Missing Values
+
+We have missing station names and ids. We also have missing ending latitude and longitude information. We will probably have to remove these rows if we cannot determine where the rider started from. 
+
+```{r missing-values, echo=FALSE}
+trips <-
+  trips |>
+  dplyr::select(!ride_id)
+
+missing_data <-
+  trips %>%
+  summarise(across(everything(), ~ sum(is.na(.x))))
+
+kbl(missing_data) |>
+    kable_classic(full_width = F, html_font = "Cambria") %>%
+  kable_styling(latex_options = "HOLD_position")
+```
+
+
+
+### Developing Predictor Variables 
+
+We have the latitude and longitude values, where if we had to monetary allowance, we could create a query using [`gmapsdistance`](https://cran.r-project.org/web/packages/gmapsdistance/gmapsdistance.pdf), that would calculate the distance traveled based on the mode of transportation. It would provide the best accurate results to determine traveled distance on these bikes. However, given these restraints we could estimate the values based on the [data](https://en.wikipedia.org/wiki/Citi_Bike) where classic bikes travel around 8.3 miles per hour and electric bikes travel up to 20 miles per hour. To limit the maximum speeds on the electric bikes given the crowded nature of New York City, we will arbitrarily limit the speeds up to 15 miles per hours in the calculation. 
+
+**Trips Predictor Variables**
+
+- `usage_time:` how long the ride was for (in seconds)
+- `est_distance:` estimated traveled distance based on bike usage (in miles)
+
+```{r predictors}
+trips <- trips |>
+  mutate(usage_time = time_length(ended_at - started_at, "seconds"),
+         est_distance = usage_time * case_when(rideable_type == "classic_bike" ~ 0.00230556,  ## converted to miles per second
+                                                      rideable_type == "electric_bike" ~ 0.00416667)) ## converted to miles per second
+
+kbl(head(trips)) |>
+  kable_classic(full_width = F, html_font = "Cambria") |>
+  footnote(general_title = "Dimensions: ",
+          TeX(paste0(nrow(trips), " x ", ncol(trips)))) %>%
+  kable_styling(latex_options = "HOLD_position")
+```
+
+**Weather Predictor Variables**
+
+- `temp_deg_f:` temperature (Fahrenheit)
+- `rel_humidity:` relative humidity 
+- `total_precip:` total precipitation (inches)
+- `wind_speed:` wind speed (miles per hour)
+- `day_of_week`: day of the week (Monday, Tuesday...)
+
+The weather data was in metric system and converted to imperial (US) standards. This includes the temperature as Fahrenheit, and total precipitation as inches. 
+
+```{r weather-import}
+weather <- read_csv('weather.csv') |> 
+  janitor::clean_names()
+
+weather <- 
+  weather |> 
+  mutate(temp_deg_f = celsius.to.fahrenheit(temperature_deg_c),
+         rel_humidity = dewpoint.to.humidity(t = temperature_deg_c, 
+                                             dp = dewpoint_temperature_deg_c, 
+                                             temperature.metric = "celsius"),
+         total_precip = total_precipitation_mm_of_water_equivalent / 25.4,
+         wind_speed_mph = convert_wind_speed(wind_speed_m_s, old_metric="mps", new_metric="mph", round=2))
+
+weather <-
+  weather |> 
+  mutate(day_of_week = wday(datetime_utc, label = TRUE, week_start = 1, abbr = FALSE),
+         day_of_week = as.factor(day_of_week),
+         datetime_ny = with_tz(datetime_utc, "America/New_York")) |>
+  relocate(datetime_ny)
+```
+
+Weather data had zero missing values. 
+
+```{r weather-missing-values, echo=FALSE}
+missing_data <-
+  weather %>%
+  summarise(across(everything(), ~ sum(is.na(.x))))
+
+kbl(missing_data) |>
+    kable_classic(full_width = F, html_font = "Cambria") %>%
+  kable_styling(latex_options = "HOLD_position")
+```
+
+
+```{r merge dataframes}
+raw_trips_weather <-
+  trips %>%
+  mutate(datetime_ny = floor_date(started_at, "hour")) %>%
+  left_join(weather, by=join_by(datetime_ny))
+
+write_parquet(raw_trips_weather, "raw_trips_weather.parquet")
+```
+
+
+### Summary Statistics
+
+Our table gives us a summary of all our numerical variables. At a quick glance, `est_distance` and `usage_time` appear to have sever negative values which should not happen. We would need to either replace with imputed values or drop them. 
+
+```{r summary, echo=FALSE}
+num_var <- c("usage_time", "est_distance", "temp_deg_f", "rel_humidity", "total_precip", "wind_speed_mph")
+
+num_raw_trips_weather <- 
+  raw_trips_weather |> 
+    dplyr::select(num_var)
+
+summary <- 
+  round(descr(num_raw_trips_weather), 2)
+kbl(summary, booktabs = TRUE) |>
+    kable_classic(full_width = F, html_font = "Cambria") %>%
+  kable_styling(latex_options = "HOLD_position") %>%
+  kableExtra::landscape()
+```
+
+
+### Visualizations
+
+**Density**
+
+We can get a better idea of the distributions and skewness by plotting our variables. The plots show significant right skew in `wind_speed_mph`, `usage_time` and `est_distance` while we have a Poisson distribution in `total_precip`. These skewed variables might be candidates for transformation. The plot also shows `rel_humidity` is multi-modal and hovers around every 20% increase in humidity. We also see issues with outliers that we need to investigate.
+
+
+```{r density, echo=FALSE}
+num_raw_trips_weather |>
+  gather(key = "variable", value = "value") |>  
+  ggplot(aes(x = value)) + 
+  geom_histogram(aes(y = after_stat(density)), bins = 20, fill = '#4E79A7', color = 'black') + 
+  stat_density(geom = "line", color = "red") +
+  facet_wrap(~ variable, scales = 'free') +
+  theme(strip.text = element_text(size = 5))
+```
+
+\newpage
+
+**Boxplot** 
+
+In our density plot some of the variables have wide distributions and many points above the density lines. These boxplots further confirm the skewness mentioned earlier. They also reveal that variables `est_distance`, `total_precip` and `usage_time` all have a large amount of outliers.
+
+```{r boxplot, echo=FALSE}
+
+num_raw_trips_weather %>%
+  gather(key = "Variable", value = "Value") |>
+  ggplot(aes(x = "", y = Value)) +  
+  geom_boxplot(fill = "#4E79A7") +
+  facet_wrap(~ Variable, scales = "free") + 
+  labs(x = NULL, y = "Value") +  
+  theme(strip.text = element_text(size = 5))
+```
+
+**Correlation Matrix**
+Our next step is to check the correlation between our variables.
+
+- **Negative Correlations: ** Predictors `wind_speed_mph` and `rel_humidity` exhibit negative correlations with each other, indicating that as the relative humidity increases, the likelihood of the wind speed being above the median decreases. It is interesting, as we could have assumed more humidity brings a higher chance of rain and also wind speeds. 
+
+- **Positive Correlations:** Conversely, predictors such as `usage_time` and `est_distance` exhibit strong positive correlations with each other. This makes sense as we derived the distance traveled based on how long they rode the bike for. We also see some positive relationship between `rel_humidity` and `total_precip` which intuitively makes sense. 
+
+```{r corr-plot, echo=FALSE}
+q <- cor(num_raw_trips_weather)
+
+ggcorrplot(q, type = "upper", outline.color = "white",
+           ggtheme = theme_classic,
+           colors = c("#F28E2B", "white", "#4E79A7"),
+           lab = TRUE, show.legend = F, tl.cex = 5, lab_size = 3) 
+```
+
+**Class Imbalance**
+
+Lastly, we will check whether the classes of the `member_casual` variable is balanced to avoid misleading models. For example, if the data has an imbalance of $95\%$ to $5\%$ success/fail rate, then predicting $100\%$ percent of the time will be a success will result in a model successful $95\%$ of the time but of zero actual value to us. We definitely see most users are members as opposed to casual non-member users. We need to keep in mind which metrics we will use to evaluate our models because of this. 
+
+```{r class-bal, echo=FALSE}
+class_freq <- raw_trips_weather |>
+  count(member_casual)
+
+ggplot(raw_trips_weather, aes(x = member_casual, fill = as.factor(member_casual))) +
+  geom_bar(color = "black") +
+  geom_text(data = class_freq, aes(label = n, y = n), vjust = -0.5, size = 3, color = "black") +
+  scale_fill_manual(values = c("#F28E2B", "#4E79A7")) +  # Customize fill colors
+  labs(title = "Class Distribution",
+       x = "Type of User",
+       y = "Frequency",
+       fill = "Target") +
+  theme_bw()
+```
+
+
+We also see how electric bikes are about twice as likely to be used compared to the classic bike. This may be due to inventory or preferences on the bike users are willing to take trips with. 
+
+```{r class-bal-2, echo=FALSE}
+class_freq <- raw_trips_weather |>
+  count(rideable_type)
+
+ggplot(raw_trips_weather, aes(x = rideable_type, fill = as.factor(rideable_type))) +
+  geom_bar(color = "black") +
+  geom_text(data = class_freq, aes(label = n, y = n), vjust = -0.5, size = 3, color = "black") +
+  scale_fill_manual(values = c("#F28E2B", "#4E79A7")) +  # Customize fill colors
+  labs(title = "Class Distribution",
+       x = "Type of Bike",
+       y = "Frequency",
+       fill = "Target") +
+  theme_bw()
+```
+
+
+## DATA PREP 
+```{r}
+library(arrow)
+library(caret)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(kableExtra)
+library(mice)
+```
+
+
+```{r}
+raw_trips_weather <- read_parquet("raw_trips_weather.parquet")
+str(raw_trips_weather)
+head(raw_trips_weather)
+
+```
+
+To do list:
+1. Drop missing values
+2. Split the data set 
+3. Normalize the data 
+4. Deal with outliers
+5. Create Parquet files for the data 
+
+Now that we have completed the exploration of our dataset, we can continue with preparing our data for further analysis. First, we will remove missing values from our data set. Then, we will split our data into training and testing sets to prevent leakage during modeling.
+```{r}
+set.seed(1125)
+
+# Omit missing values from the raw_trips_weather dataset
+cleaned_raw_trips_weather <- na.omit(raw_trips_weather)
+
+# Splitting the cleaned dataset into training and testing sets
+trainIndex <- createDataPartition(y = cleaned_raw_trips_weather$member_casual, p = 0.7, list = FALSE, times = 1)
+train_data <- cleaned_raw_trips_weather[trainIndex, ]
+test_data <- cleaned_raw_trips_weather[-trainIndex, ]
+
+```
+
+
+Summary statistics will be computed for the raw trips/weather data, as well as the training and testing datasets after cleaning the data. These statistics encompass the minimum, 1st quartile, median, mean, 3rd quartile, and maximum values of the variables. By examining these metrics across the three datasets, we gain insights into the impact of the imputation process on our data. The summary statistics across all datasets show consistency, indicating that the cleaning and transformation processes have been applied consistently across the datasets.
+
+```{r}
+# Define the function to generate summary statistics
+generate_summary <- function(data, vars, dataset_name) {
+    # Compute summary statistics for the specified variables
+    summary_stats <- data %>%
+        summarise(across(all_of(vars), list(
+            min = ~min(., na.rm = TRUE),
+            q1 = ~quantile(., probs = 0.25, na.rm = TRUE),
+            median = ~median(., na.rm = TRUE),
+            mean = ~mean(., na.rm = TRUE),
+            q3 = ~quantile(., probs = 0.75, na.rm = TRUE),
+            max = ~max(., na.rm = TRUE)
+        ))) %>%
+        pivot_longer(cols = everything(), names_to = "Variable_Stat", values_to = "Value") %>%
+        mutate(Dataset = dataset_name)
+    
+    return(summary_stats)
+}
+
+# Specify the variables for which summary statistics will be generated
+variables <- c("start_lat", "start_lng", "end_lat", "end_lng", "usage_time", "est_distance")  
+
+# Generate summary statistics for each dataset
+summary_cleaned <- generate_summary(cleaned_raw_trips_weather, variables, "Cleaned Raw Trips")
+summary_train <- generate_summary(train_data, variables, "Train Data")
+summary_test <- generate_summary(test_data, variables, "Test Data")
+
+# Combine summary statistics for all datasets
+combined_summary <- bind_rows(summary_cleaned, summary_train, summary_test)
+
+# Format numeric values and create a table
+final_summary <- combined_summary %>%
+    pivot_wider(names_from = Dataset, values_from = Value) %>% 
+    mutate(across(where(is.numeric), ~format(., scientific = FALSE)))
+
+# Print the final summary table
+kbl(final_summary, caption = "Summary Statistics Comparison Across Datasets") %>%
+    kable_classic(full_width = F, html_font = "Cambria") %>%
+    kable_styling(latex_options = "HOLD_position")
+
+```
+
+
+Now that we have cleaned our data and split it into test and train data, we can move onto the transformations. As mentioned in our Data Exploration, that the following variables showed signs of Skewness: 
+
+usage_time: How long the ride was for (in seconds)
+est_distance: Estimated traveled distance based on bike usage (in miles)
+temp_deg_f: Temperature (Fahrenheit)
+rel_humidity: Relative humidity
+total_precip: Total precipitation (inches)
+wind_speed: Wind speed (miles per hour)
+
+We applied various transformations to address the skewness observed in certain variables. For the 'usage_time' and 'est_distance' variables, we applied a logarithmic transformation to normalize their distributions. Temperature ('temp_deg_f') and total precipitation ('total_precip') underwent square root transformations to mitigate skewness. Relative humidity ('rel_humidity') and wind speed ('wind_speed') were also square root-transformed for the same purpose. These transformations help to make the data more suitable for modeling by ensuring that the variables adhere more closely to normality assumptions. Additionally, we ensured that these transformations were consistently applied to both the training and testing datasets to maintain consistency across our analyses.
+```{r}
+# Define a function to apply pre-calculated transformations
+apply_pre_calculated_transformations <- function(data, transforms) {
+  transformed_data <- data
+  
+  # Apply log transformation to 'usage_time'
+  if ("log_usage_time" %in% names(transforms)) {
+    transformed_data$log_usage_time <- transforms$log_usage_time
+  }
+  
+  # Apply log transformation to 'est_distance'
+  if ("log_est_distance" %in% names(transforms)) {
+    transformed_data$log_est_distance <- transforms$log_est_distance
+  }
+  
+  # Apply square root transformation to 'temp_deg_f'
+  if ("sqrt_temp_deg_f" %in% names(transforms)) {
+    transformed_data$sqrt_temp_deg_f <- transforms$sqrt_temp_deg_f
+  }
+  
+  # Apply square root transformation to 'rel_humidity'
+  if ("sqrt_rel_humidity" %in% names(transforms)) {
+    transformed_data$sqrt_rel_humidity <- transforms$sqrt_rel_humidity
+  }
+  
+  # Apply log transformation to 'total_precip'
+  if ("log_total_precip" %in% names(transforms)) {
+    transformed_data$log_total_precip <- transforms$log_total_precip
+  }
+  
+  # Apply square root transformation to 'wind_speed'
+  if ("sqrt_wind_speed" %in% names(transforms)) {
+    transformed_data$sqrt_wind_speed <- transforms$sqrt_wind_speed
+  }
+  
+  return(transformed_data)
+}
+
+# Apply transformations to cleaned raw trips/weather data
+cleaned_raw_trips_weather_transformed <- apply_pre_calculated_transformations(cleaned_raw_trips_weather, transform_params)
+
+# Apply transformations to train and test datasets
+train_data_transformed <- apply_pre_calculated_transformations(train_data, transform_params)
+test_data_transformed <- apply_pre_calculated_transformations(test_data, transform_params)
+
+```
+
+Now that we've applied transformations to normalize our skewed variables, we can visually inspect our results through histograms. By visualizing our histograms, we observe that most of our variables exhibit distributions closer to normal. This normalization process prepares our data for subsequent modeling and analysis.
+
+```{r}
+
+cleaned_raw_trips_weather_transformed %>%
+  gather(key = "variable", value = "value", usage_time, est_distance, temp_deg_f, rel_humidity, total_precip, wind_speed_mph) %>%
+  ggplot(aes(x = value)) +
+  geom_histogram(aes(y = after_stat(density)), bins = 20, fill = '#4E79A7', color = 'black') +
+  stat_density(geom = "line", color = "red") +
+  facet_wrap(~ variable, scales = 'free') +
+  theme_bw() +
+  scale_x_continuous(labels = scales::comma) +
+  scale_y_continuous(labels = scales::comma)
+
+```
+
+As for the outliers, we have ultimately decided to keep them in the dataset. While outliers can deviate from the dataset, it can often provide crucial insights to our analysis. Removing them could potentially discard valuable information, leading to biased analysis and incomplete conclusions. Hence, retaining outliers ensures that our analysis captures the full range of variability present in the data, resulting in more accurate and reliable insights.
+
+Lastly we will create Parquet files to store our cleaned and transformed data set. 
+```{r}
+arrow::write_parquet(cleaned_raw_trips_weather_transformed, "cleaned_raw_trips_weather_transformed.parquet")
+arrow::write_parquet(train_data_transformed, "train_data_transformed.parquet")
+arrow::write_parquet(test_data_transformed, "test_data_transformed.parquet")
+
+
+```
+

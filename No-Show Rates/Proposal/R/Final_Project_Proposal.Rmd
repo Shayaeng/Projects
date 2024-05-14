@@ -1,0 +1,101 @@
+---
+title: "Final Project"
+author: "Shaya Engelman"
+date: "2024-04-02"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(knitr)
+library(tidyverse)
+library(gridExtra)
+library(summarytools)
+library(ggcorrplot)
+```
+
+# Research Question
+
+Can we predict which patients will show up for their appointments versus those who will either cancel last minute or not show up at all?
+
+# Justification
+
+No-shows are a common problem in healthcare. They lead to wasted resources, lost revenue, and can have a negative impact on patient outcomes. By identifying patients who are at risk of not showing up for their appointments, healthcare providers can take steps to reduce the number of no-shows and improve patient outcomes. Additionally, in cases where multiple no-shows seem likely, providers can plan for how best utilize their expected time for other uses.
+
+My wife is a Registered Dietitian and her most common complaint is no-shows. She has a limited number of appointments available each day and when a patient doesn't show up, it's a lost opportunity to help someone else. 
+
+# Data
+
+This dataset was found on Kaggle here https://www.kaggle.com/datasets/joniarroba/noshowappointments/data. It contains information on over 100,000 medical appointments in Brazil. The dataset includes information on patient demographics, medical history, and whether or not the patient showed up for their appointment. I am currently in contact with my wife's employer to see if I can get access to their data to see if I can use it for this project. I haven't received a final answer yet so I do not know for sure if I will be able to use this data. If I do not get it, I will use the data from Kaggle and possibly explore other avenues of finding more data.
+
+```{r load-data}
+data <- read.csv("C:\\Users\\shaya\\OneDrive\\Documents\\Final Project\\Data\\KaggleV2-May-2016.csv")
+kable(head(data))
+```
+
+We can see the dataset contains the following variables: It has the patient ID, Appointment ID, their gender, the day the appointment was scheduled, appointment day, age, neighborhood, scholarship status, hypertension, diabetes, alcoholism, handicap status, SMS received as a reminder, and whether or not the patient showed up for their appointment. This dataset is collected from a hospital in Brazil and scholarship status refers to whether or not the patient is enrolled in the Bolsa Familia program which is a social welfare program in Brazil.
+
+```{r}
+data[!complete.cases(data),] #check for incomplete rows
+
+str(data) #check for data types
+```
+
+We can see from the above that our data is very clean and doesn't require much work. We have no missing values and all of our data types are correct. The target variable is the No-show column, which is a character type column with strings "Yes" and "No". We will need to convert this to a binary variable for our model. Sex is also a character column with "M" and "F" values. We will need to convert this to a binary variable as well. The day the appointment was scheduled and the appointment day are both character columns and we will need to convert these to date columns.
+
+```{r}
+descr(data)
+```
+
+From the above output, several important observations can be made about the dataset. Firstly, the average age of patients attending appointments is approximately 37 years, with a considerable spread indicated by a standard deviation of 23 years. There appears to be an outlier in age with a minimum value of -1, which requires further investigation. The dataset includes patients with various medical conditions, such as hypertension (mean prevalence of 20%) and diabetes (7% prevalence), while alcoholism is relatively uncommon (3% prevalence). The majority of patients did not receive SMS reminders (mean proportion of 32%). The statistics also reveal extreme values in the Handcap variable, with a maximum value of 4, suggesting potential data integrity issues or varying definitions of disability levels. Further exploration and cleaning of the dataset are recommended to ensure the accuracy and reliability of subsequent analyses.
+
+# Exploratory Data Analysis
+
+```{r}
+selected_columns <- c("Gender", "Scholarship", "Hipertension", "Diabetes", "Alcoholism", "Handcap", "SMS_received", "No.show")
+data |>
+  select(all_of(selected_columns)) |>
+  gather(key = "variable", value = "value") |>
+  ggplot(aes(x = factor(value))) +
+  geom_bar(fill = 'lightblue', color = 'black') +
+  facet_wrap(~ variable, scales = 'free') +
+  theme(strip.text = element_text(size = 8),
+       axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(title = "Bar Plot of Categorical Variables")
+```
+
+The bar plots above show the distribution of the categorical variables in the dataset. The variabls all seem to have heavy class imbalances. This will havee to be considered when building our model. It also again shows us something wrong with the Handcap variable as it has a value of 4 which should not be possible. We will need to investigate this further.
+
+We can visualize the 'Age' variable using a box plot to identify any potential outliers or unusual patterns. We 
+
+```{r}
+age_box_plot <- data |>
+  select("Age") |>
+  ggplot(aes(x = "", y = Age)) +
+  geom_boxplot(fill = 'lightblue') +
+  labs(title = "Box Plot of Age", x = "Age") +
+  theme(strip.text = element_text(size = 8))
+
+age_histogram <- data |>
+  select("Age") |>
+  ggplot(aes(x = Age)) +
+  geom_histogram(binwidth = 10, fill = 'lightblue') +
+  labs(title = "Histogram of Age", x = "Age") +
+  theme(strip.text = element_text(size = 8))
+
+grid.arrange(age_box_plot, age_histogram, ncol = 2)
+```
+
+The above plots show some alarming results. The box plot shows a minimum age of -1 which is not possible. The histogram shows a peak at 0 which is extremely unlikely as that would  mean that a massively disproportionate number of patients are newborns. This amount of 0s is likely due to missing data and skews our summary of the mean age. We will need to investigate this further.
+
+We will now check for correlation betweent the variables to see if these is any multicollinearity between them we need to be aware of.
+```{r}
+q <- cor(data[,c("Age", "Scholarship", "Hipertension", "Diabetes", "Alcoholism", "Handcap", "SMS_received")])
+ggcorrplot(q, type = "upper", outline.color = "white",
+           ggtheme = theme_classic(),
+           colors = c("orange", "white", "skyblue"),
+           lab = TRUE, show.legend = F, tl.cex = 5, lab_size = 3) 
+```

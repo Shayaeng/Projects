@@ -1,0 +1,304 @@
+---
+title: "Citi Bike Users"
+author: "Daniel Craig, John Cruz, Shaya Engelman, Noori Selina, Gavriel Steinmetz-Silber"
+date: "2024-04-23"
+output:
+  pdf_document: default
+  html_document:
+    code_folding: hide
+urlcolor: blue
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=FALSE, warning=FALSE, message = FALSE)
+```
+
+## Required Libraries
+
+```{r library,include = TRUE, class.source = "fold-show", message=FALSE}
+library(tidyverse)
+library(janitor)
+library(knitr)
+library(kableExtra)
+library(latex2exp)
+library(psych)
+library(scales)
+library(stringr)
+library(ggcorrplot)
+library(ggmice)
+library(caret)
+library(mice)
+library(bestNormalize)
+library(e1071)
+library(diptest)
+library(MASS)
+library(arrow)
+library(summarytools)
+library(weathermetrics)
+library(lubridate)
+```
+
+## Introduction
+
+[Citi Bike](https://en.wikipedia.org/wiki/Citi_Bike), owned by Lyft, is a privately owned public bicycle sharing system serving the New York City boroughs of the Bronx, Brooklyn, Manhattan, and Queens, as well as Jersey City and Hoboken, New Jersey. They provide an [open data](https://citibikenyc.com/system-data) platform that gives people access to some of their system data of how users use their services. This includes station information, latitude and longitude, and ride types. Our goal is to investigate and classify which type of trips are done by members versus casual users. If we can predict trips that we expected members to use, but they are casual users, we can provide opportunities to promote an upgrade to a membership tier given their recent ride. 
+
+We also obtained hourly weather data to include for each ride. This was downloaded via [Oikolab's](https://oikolab.com/) API. It includes temperature, precipitation, humidity and wind speed. 
+
+## Data Exploration {.tabset}
+
+### Import Data 
+
+The data was initially in multiple zipped CSV files. Due to the large nature of these files, the data will be converted to parquet for easier use. It is also important to note that we are only using March 2024 data as these files are around 1 GB and computational space needs to be considered. 
+
+```{r convert-files, warning=FALSE, message=FALSE}
+# Convert to parquet
+
+# library(dplyr)
+# library(readr)
+# 
+# df <- list.files(path = "data/", full.names = TRUE, pattern = "\\.csv$") %>%
+#   lapply(read_csv) %>%
+#   lapply(\(x) mutate(x, across(end_station_id, as.character))) %>%
+#   bind_rows
+# 
+# write_parquet(df, "citi_bike_03_2024.parquet")
+```
+
+
+```{r import-data, echo=FALSE}
+trips <- read_parquet("citi_bike_03_2024.parquet")
+```
+
+### About the Data
+
+```{r data-glance, echo=FALSE}
+kbl(head(trips)) |>
+  kable_classic(full_width = F, html_font = "Cambria") |>
+  footnote(general_title = "Dimensions: ",
+          TeX(paste0(nrow(trips), " x ", ncol(trips)))) %>%
+  kable_styling(latex_options = "HOLD_position")
+```
+
+The dataset has 2,737,881 records (rows) with thirteen (13) variables. We can drop the `ride_id` as it does not provide any meaningful information. 
+
+
+**Trips Predictor Variables**
+
+- `rideable_type:` type of bike rented (electric or classic)
+- `started_at:` datetime rental was taken from the station
+- `ended_at:` datetime rental was returned to a station
+- `start_station_name:` bike taken from station
+- `start_station_id:`
+- `end_station_name:` bike returned to station
+- `end_station_id:`  
+- `start_lat:` starting station latitude
+- `start_lng:` starting station longitude 
+- `end_lat:` ending station latitude 
+- `end_lng:` ending station longitude 
+
+**Response Variable**
+
+- `member_casual:` whether the rental was used by a member or casual (one-time rental) user. We will encode 1 as member and 0 as casual. 
+
+### Missing Values
+
+We have missing station names and ids. We also have missing ending latitude and longitude information. We will probably have to remove these rows if we cannot determine where the rider started from. 
+
+```{r missing-values, echo=FALSE}
+trips <-
+  trips |>
+  dplyr::select(!ride_id)
+
+missing_data <-
+  trips %>%
+  summarise(across(everything(), ~ sum(is.na(.x))))
+
+kbl(missing_data) |>
+    kable_classic(full_width = F, html_font = "Cambria") %>%
+  kable_styling(latex_options = "HOLD_position")
+```
+
+
+
+### Developing Predictor Variables 
+
+We have the latitude and longitude values, where if we had to monetary allowance, we could create a query using [`gmapsdistance`](https://cran.r-project.org/web/packages/gmapsdistance/gmapsdistance.pdf), that would calculate the distance traveled based on the mode of transportation. It would provide the best accurate results to determine traveled distance on these bikes. However, given these restraints we could estimate the values based on the [data](https://en.wikipedia.org/wiki/Citi_Bike) where classic bikes travel around 8.3 miles per hour and electric bikes travel up to 20 miles per hour. To limit the maximum speeds on the electric bikes given the crowded nature of New York City, we will arbitrarily limit the speeds up to 15 miles per hours in the calculation. 
+
+**Trips Predictor Variables**
+
+- `usage_time:` how long the ride was for (in seconds)
+- `est_distance:` estimated traveled distance based on bike usage (in miles)
+
+```{r predictors}
+trips <- trips |>
+  mutate(usage_time = time_length(ended_at - started_at, "seconds"),
+         est_distance = usage_time * case_when(rideable_type == "classic_bike" ~ 0.00230556,  ## converted to miles per second
+                                                      rideable_type == "electric_bike" ~ 0.00416667)) ## converted to miles per second
+
+kbl(head(trips)) |>
+  kable_classic(full_width = F, html_font = "Cambria") |>
+  footnote(general_title = "Dimensions: ",
+          TeX(paste0(nrow(trips), " x ", ncol(trips)))) %>%
+  kable_styling(latex_options = "HOLD_position")
+```
+
+**Weather Predictor Variables**
+
+- `temp_deg_f:` temperature (Fahrenheit)
+- `rel_humidity:` relative humidity 
+- `total_precip:` total precipitation (inches)
+- `wind_speed:` wind speed (miles per hour)
+- `day_of_week`: day of the week (Monday, Tuesday...)
+
+The weather data was in metric system and converted to imperial (US) standards. This includes the temperature as Fahrenheit, and total precipitation as inches. 
+
+```{r weather-import}
+weather <- read_csv('weather.csv') |> 
+  janitor::clean_names()
+
+weather <- 
+  weather |> 
+  mutate(temp_deg_f = celsius.to.fahrenheit(temperature_deg_c),
+         rel_humidity = dewpoint.to.humidity(t = temperature_deg_c, 
+                                             dp = dewpoint_temperature_deg_c, 
+                                             temperature.metric = "celsius"),
+         total_precip = total_precipitation_mm_of_water_equivalent / 25.4,
+         wind_speed_mph = convert_wind_speed(wind_speed_m_s, old_metric="mps", new_metric="mph", round=2))
+
+weather <-
+  weather |> 
+  mutate(day_of_week = wday(datetime_utc, label = TRUE, week_start = 1, abbr = FALSE),
+         day_of_week = as.factor(day_of_week),
+         datetime_ny = with_tz(datetime_utc, "America/New_York")) |>
+  relocate(datetime_ny)
+```
+
+Weather data had zero missing values. 
+
+```{r weather-missing-values, echo=FALSE}
+missing_data <-
+  weather %>%
+  summarise(across(everything(), ~ sum(is.na(.x))))
+
+kbl(missing_data) |>
+    kable_classic(full_width = F, html_font = "Cambria") %>%
+  kable_styling(latex_options = "HOLD_position")
+```
+
+
+```{r merge dataframes}
+raw_trips_weather <-
+  trips %>%
+  mutate(datetime_ny = floor_date(started_at, "hour")) %>%
+  left_join(weather, by=join_by(datetime_ny))
+
+#write_parquet(raw_trips_weather, "raw_trips_weather.parquet")
+```
+
+
+### Summary Statistics
+
+Our table gives us a summary of all our numerical variables. At a quick glance, `est_distance` and `usage_time` appear to have severe negative values which should not happen. We would need to either replace with imputed values or drop them. 
+
+```{r summary, echo=FALSE}
+num_var <- c("usage_time", "est_distance", "temp_deg_f", "rel_humidity", "total_precip", "wind_speed_mph")
+
+num_raw_trips_weather <- 
+  raw_trips_weather |> 
+    dplyr::select(num_var)
+
+summary <- 
+  round(descr(num_raw_trips_weather), 2)
+kbl(summary, booktabs = TRUE) |>
+    kable_classic(full_width = F, html_font = "Cambria") %>%
+  kable_styling(latex_options = "HOLD_position") %>%
+  kableExtra::landscape()
+```
+
+
+### Visualizations
+
+**Density**
+
+We can get a better idea of the distributions and skewness by plotting our variables. The plots show significant right skew in `wind_speed_mph`, `usage_time` and `est_distance` while we have a Poisson distribution in `total_precip`. These skewed variables might be candidates for transformation. The plot also shows `rel_humidity` is multi-modal and hovers around every 20% increase in humidity. We also see issues with outliers that we need to investigate.
+
+
+```{r density, echo=FALSE}
+num_raw_trips_weather |>
+  gather(key = "variable", value = "value") |>  
+  ggplot(aes(x = value)) + 
+  geom_histogram(aes(y = after_stat(density)), bins = 20, fill = '#4E79A7', color = 'black') + 
+  stat_density(geom = "line", color = "red") +
+  facet_wrap(~ variable, scales = 'free') +
+  theme(strip.text = element_text(size = 5))
+```
+
+\newpage
+
+**Boxplot** 
+
+In our density plot some of the variables have wide distributions and many points above the density lines. These boxplots further confirm the skewness mentioned earlier. They also reveal that variables `est_distance`, `total_precip` and `usage_time` all have a large amount of outliers.
+
+```{r boxplot, echo=FALSE}
+
+num_raw_trips_weather %>%
+  gather(key = "Variable", value = "Value") |>
+  ggplot(aes(x = "", y = Value)) +  
+  geom_boxplot(fill = "#4E79A7") +
+  facet_wrap(~ Variable, scales = "free") + 
+  labs(x = NULL, y = "Value") +  
+  theme(strip.text = element_text(size = 5))
+```
+
+**Correlation Matrix**
+Our next step is to check the correlation between our variables.
+
+- **Negative Correlations: ** Predictors `wind_speed_mph` and `rel_humidity` exhibit negative correlations with each other, indicating that as the relative humidity increases, the likelihood of the wind speed being above the median decreases. It is interesting, as we could have assumed more humidity brings a higher chance of rain and also wind speeds. 
+
+- **Positive Correlations:** Conversely, predictors such as `usage_time` and `est_distance` exhibit strong positive correlations with each other. This makes sense as we derived the distance traveled based on how long they rode the bike for. We also see some positive relationship between `rel_humidity` and `total_precip` which intuitively makes sense. 
+
+```{r corr-plot, echo=FALSE}
+q <- cor(num_raw_trips_weather)
+
+ggcorrplot(q, type = "upper", outline.color = "white",
+           ggtheme = theme_classic,
+           colors = c("#F28E2B", "white", "#4E79A7"),
+           lab = TRUE, show.legend = F, tl.cex = 5, lab_size = 3) 
+```
+
+**Class Imbalance**
+
+Lastly, we will check whether the classes of the `member_casual` variable is balanced to avoid misleading models. For example, if the data has an imbalance of $95\%$ to $5\%$ success/fail rate, then predicting $100\%$ percent of the time will be a success will result in a model successful $95\%$ of the time but of zero actual value to us. We definitely see most users are members as opposed to casual non-member users. We need to keep in mind which metrics we will use to evaluate our models because of this. 
+
+```{r class-bal, echo=FALSE}
+class_freq <- raw_trips_weather |>
+  count(member_casual)
+
+ggplot(raw_trips_weather, aes(x = member_casual, fill = as.factor(member_casual))) +
+  geom_bar(color = "black") +
+  geom_text(data = class_freq, aes(label = n, y = n), vjust = -0.5, size = 3, color = "black") +
+  scale_fill_manual(values = c("#F28E2B", "#4E79A7")) +  # Customize fill colors
+  labs(title = "Class Distribution",
+       x = "Type of User",
+       y = "Frequency",
+       fill = "Target") +
+  theme_bw()
+```
+
+
+We also see how electric bikes are about twice as likely to be used compared to the classic bike. This may be due to inventory or preferences on the bike users are willing to take trips with. 
+
+```{r class-bal-2, echo=FALSE}
+class_freq <- raw_trips_weather |>
+  count(rideable_type)
+
+ggplot(raw_trips_weather, aes(x = rideable_type, fill = as.factor(rideable_type))) +
+  geom_bar(color = "black") +
+  geom_text(data = class_freq, aes(label = n, y = n), vjust = -0.5, size = 3, color = "black") +
+  scale_fill_manual(values = c("#F28E2B", "#4E79A7")) +  # Customize fill colors
+  labs(title = "Class Distribution",
+       x = "Type of Bike",
+       y = "Frequency",
+       fill = "Target") +
+  theme_bw()
+```
