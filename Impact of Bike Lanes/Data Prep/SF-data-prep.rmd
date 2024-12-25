@@ -1,0 +1,218 @@
+---
+title: "SF Data Prep"
+author: "Shaya Engelman"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, include=FALSE}
+# One time setup to prepare the Bay Wheels data
+
+
+# Load necessary library
+library(data.table)
+
+# Define file paths
+file_path <- "C:/Users/shaya/OneDrive/Documents/repos/Data698/temp/SF_baywheelsmonths/2017-fordgobike-tripdata.csv"
+output_dir <- "C:/Users/shaya/OneDrive/Documents/repos/Data698/temp/manual prepped"
+
+# Create output directory if it doesn't exist
+if (!dir.exists(output_dir)) {
+  dir.create(output_dir)
+}
+
+# Read the CSV file
+data <- fread(file_path)
+
+# Ensure the start_time column is in POSIXct format
+data[, start_time := as.POSIXct(start_time, format="%Y-%m-%d %H:%M:%S")]
+
+# Split the data by month
+data[, month := format(start_time, "%Y-%m")]
+split_data <- split(data, data$month)
+
+# Save each month's data to a new CSV file
+lapply(names(split_data), function(month) {
+  month_data <- split_data[[month]]
+  month_file_name <- paste0(month, ".csv")
+  month_file_path <- file.path(output_dir, month_file_name)
+  fwrite(month_data, month_file_path)
+  cat("Saved:", month_file_name, "\n")
+})
+```
+
+```{r}
+# Load necessary libraries
+library(tidyverse)
+library(lubridate)
+library(zoo)
+library(data.table)
+library(fs)
+
+# File paths
+file_path_bike_lane <- "C:/Users/shaya/OneDrive/Documents/repos/Data698/Research Project/Data/San Francisco/MTA_Bike_Network_Linear_Features_20241014.csv"
+file_path_traffic <- "C:/Users/shaya/OneDrive/Documents/repos/Data698/Research Project/Data/San Francisco/corridor_counts_2014-2022.csv"
+dir_path_bay_wheels <- "C:/Users/shaya/OneDrive/Documents/repos/Data698/Research Project/Data/San Francisco/Bay Wheels"
+file_path_population <- "C:/Users/shaya/OneDrive/Documents/repos/Data698/Research Project/Data/San Francisco/Population.csv"
+file_path_accidents <- "C:/Users/shaya/OneDrive/Documents/repos/Data698/Research Project/Data/San Francisco/Traffic_Crashes_Resulting_in_Injury_20241014.csv"
+
+# Define population data
+population_values <- c(805505, 815650, 828876, 839572, 850750, 863010, 871512, 878040, 880696, 881549, 870518, 811935, 807774, 808988)
+years <- 2010:(2010 + length(population_values) - 1)
+population_data <- data.frame(year = years, Population = population_values)
+
+# Create a sequence of month-year combinations
+month_year_seq <- expand.grid(year = years, month = 1:12) %>% 
+  mutate(month_year = as.Date(paste(year, month, "01", sep = "-")))
+
+# Merge population data into month_year sequence
+population_monthly <- month_year_seq %>% 
+  left_join(population_data, by = "year") %>% 
+  select(month_year, Population)
+
+# Load and process bike lane data
+bike_lane_data <- fread(file_path_bike_lane) %>% 
+  mutate(final_date = as.Date(paste(INSTALL_YR, INSTALL_MO, "01", sep = "-"), "%Y-%m-%d")) %>% 
+  filter(year(final_date) >= 2010) %>% 
+  group_by(year = year(final_date)) %>% 
+  summarise(total_length_feet = sum(LENGTH, na.rm = TRUE)) %>% 
+  mutate(total_length_miles = total_length_feet / 5280)
+
+# Load and process traffic volume data
+traffic_data <- fread(file_path_traffic) %>% 
+  select(MONTH, YEAR, VOLUME_ADT, VOLUME_AM_PEAK, VOLUME_PM_PEAK) %>% 
+  mutate(Month = paste0(YEAR, "-", sprintf("%02d", MONTH)),
+         VOLUME_ADT = as.numeric(VOLUME_ADT)) %>% 
+  filter(YEAR >= 2014)
+
+# Get total traffic volume by month
+monthly_traffic_volume <- traffic_data %>% 
+  group_by(Month) %>% 
+  summarise(Total_Volume_ADT = sum(VOLUME_ADT, na.rm = TRUE),
+            Total_Volume_AM_PEAK = sum(VOLUME_AM_PEAK, na.rm = TRUE),
+            Total_Volume_PM_PEAK = sum(VOLUME_PM_PEAK, na.rm = TRUE))
+
+# Add month-year column
+monthly_traffic_volume <- monthly_traffic_volume %>% 
+  mutate(month_year = as.Date(paste0(Month, "-01"), format = "%Y-%m-%d"))
+
+# Process Bay Wheels data
+file_names <- list.files(path = dir_path_bay_wheels, full.names = TRUE)
+bay_wheels_counts <- data.frame(file_date = character(), bay_wheels_count = numeric(), stringsAsFactors = FALSE)
+
+# Function to count rows in each file
+count_bay_wheels_rows <- function(file) {
+  file_date <- as.Date(paste0(substr(basename(file), 1, 7), "-01"), "%Y-%m-%d")
+  bay_wheels_count <- fread(file, select = 1, showProgress = FALSE)[, .N]
+  data.frame(file_date = file_date, bay_wheels_count = bay_wheels_count)
+}
+
+bay_wheels_counts <- do.call(rbind, lapply(file_names, count_bay_wheels_rows))
+
+# Merge traffic and bike lane data
+combined_data <- monthly_traffic_volume %>% 
+  mutate(year = year(month_year)) %>% 
+  left_join(bike_lane_data, by = "year")
+
+# Merge Bay Wheels data with combined data
+final_result <- combined_data %>% 
+  left_join(bay_wheels_counts, by = c("month_year" = "file_date"))
+
+# Merge population data with final_result
+final_data <- final_result %>% 
+  left_join(population_monthly, by = "month_year")
+
+# Load and process accident data
+accident_data <- fread(file_path_accidents)
+
+data_selected <- accident_data |>
+  select(`collision_date`, `collision_severity`, `mviw`, `number_killed`, `number_injured`, `dph_col_grp_description`, `party1_type`, `party2_type`)
+
+
+# Aggregate total number of people involved in accidents
+total_people <- data_selected %>%
+  summarise(Total_Killed = sum(number_killed, na.rm = TRUE), 
+            Total_Injured = sum(number_injured, na.rm = TRUE), 
+            Total_Accidents = n())
+
+# Aggregate total number of pedestrians involved in accidents
+pedestrians <- data_selected %>%
+  filter(mviw == "Pedestrian") %>%
+  summarise(Total_Pedestrians_Killed = sum(number_killed, na.rm = TRUE), 
+            Total_Pedestrians_Injured = sum(number_injured, na.rm = TRUE), 
+            Total_Pedestrian_Accidents = n())
+
+# Aggregate total number of bicyclists involved in accidents
+bicyclists <- data_selected %>%
+  filter(mviw == "Bicycle") %>%
+  summarise(Total_Bicyclists_Killed = sum(number_killed, na.rm = TRUE), 
+            Total_Bicyclists_Injured = sum(number_injured, na.rm = TRUE), 
+            Total_Bicyclist_Accidents = n())
+
+# Convert 'collision_date' to Date format and extract month and year
+data_selected$collision_date <- as.Date(data_selected$collision_date, format = "%Y %B %d")
+data_selected$Month <- format(data_selected$collision_date, "%Y-%m")
+
+# Aggregate total number of people involved in accidents per month
+monthly_totals <- data_selected %>%
+  group_by(Month) %>%
+  summarise(Total_Killed = sum(number_killed, na.rm = TRUE),
+            Total_Injured = sum(number_injured, na.rm = TRUE),
+            Total_Accidents = n())
+
+# Aggregate total number of pedestrians involved in accidents per month
+monthly_pedestrians <- data_selected %>%
+  filter(mviw == "Pedestrian") %>%
+  group_by(Month) %>%
+  summarise(Total_Pedestrians_Killed = sum(number_killed, na.rm = TRUE),
+            Total_Pedestrians_Injured = sum(number_injured, na.rm = TRUE),
+            Total_Pedestrian_Accidents = n())
+
+# Aggregate total number of bicyclists involved in accidents per month
+monthly_bicyclists <- data_selected %>%
+  filter(mviw == "Bicycle") %>%
+  group_by(Month) %>%
+  summarise(Total_Bicyclists_Killed = sum(number_killed, na.rm = TRUE),
+            Total_Bicyclists_Injured = sum(number_injured, na.rm = TRUE),
+            Total_Bicyclist_Accidents = n())
+
+# Combine all dataframes into one
+accident_summary <- monthly_totals %>%
+  left_join(monthly_pedestrians, by = "Month") %>%
+  left_join(monthly_bicyclists, by = "Month")
+
+# Convert 'Month' to 'month_year' in accident_summary
+accident_summary <- accident_summary %>%
+  mutate(month_year = as.Date(paste0(Month, "-01"), format = "%Y-%m-%d"))
+
+# Remove the original 'Month' column
+accident_summary <- accident_summary %>% select(-Month)
+
+# Merge accident data with final_data
+final_data <- final_data %>% 
+  left_join(accident_summary, by = "month_year")
+
+# Write the final dataset to CSV
+write.csv(final_data, "sf_dataset.csv", row.names = FALSE)
+
+# Print the final data to check
+print(head(final_data))
+
+# Plot scaled metrics over time
+scaled_data <- final_data %>% 
+  select(Total_Volume_ADT, total_length_miles, bay_wheels_count, Total_Injured, Total_Pedestrians_Injured, Total_Bicyclists_Injured) %>% 
+  scale() %>% 
+  as.data.frame()
+
+scaled_data$month_year <- final_data$month_year
+melted_data <- reshape2::melt(scaled_data, id.vars = "month_year")
+
+ggplot(melted_data, aes(x = month_year, y = value, color = variable)) +
+  geom_line() +
+  labs(title = "Scaled Metrics Over Time", x = "Month", y = "Scaled Value") +
+  theme_minimal()
+```

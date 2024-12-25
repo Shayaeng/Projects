@@ -1,0 +1,677 @@
+---
+title: "Draft - Final Paper"
+author: "Shaya Engelman"
+date: '`r Sys.Date()`'
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+# Load necessary packages
+library(tidyverse)
+library(data.table)
+library(mice)
+library(GGally)
+library(lubridate)
+
+```
+
+# Data Collection
+
+## Read Datasets
+
+```{r}
+nyc_data <- fread("C:\\Users\\shaya\\OneDrive\\Documents\\repos\\Data698\\Research Project\\nyc_dataset.csv")
+sf_data <- fread("C:\\Users\\shaya\\OneDrive\\Documents\\repos\\Data698\\Research Project\\sf_dataset.csv")
+chicago_data <- fread("C:\\Users\\shaya\\OneDrive\\Documents\\repos\\Data698\\Research Project\\chicago_dataset.csv")
+```
+
+# Data Exploration
+
+## NYC Data
+
+```{r}
+summary(nyc_data)
+```
+
+- Delete `total_length_miles`
+- Handle missing values
+- Check for outliers/anomalies
+- Explore distributions of variables
+- Identify relationships between variables
+- Identify potential confounding variables
+
+## Delete `total_length_miles`
+
+```{r}
+# Delete `total_length_miles`
+nyc_data <- nyc_data %>%
+  select(-total_length_miles)
+```
+
+## Handle Missing Values
+
+Identify and address missing values in the dataset.
+
+
+```{r}
+# Handle missing values
+missing_values <- nyc_data %>%
+  summarise_all(~sum(is.na(.)))
+print(missing_values)
+```
+
+### Remove Data from Before Citibike Introduction
+Remove data from before the Citibike network was introduced, as it changes the dynamics of bike usage.
+
+```{r}
+# Delete rows from before Citibike was introduced: month 2013-06
+nyc_data <- nyc_data %>%
+  filter(month_year >= "2013-06-01")
+
+# Verify missing values again
+missing_values <- nyc_data %>%
+  summarise_all(~sum(is.na(.)))
+print(missing_values)
+```
+
+### Impute Missing Values for total_length_feet
+Use the mice package to impute missing values for `total_length_feet`.
+
+```{r}
+# Impute missing values using mice
+impute_data <- mice(nyc_data, m = 5, method = 'cart', seed = 123)
+completed_data <- complete(impute_data)
+
+# Update nyc_data with imputed values
+nyc_data$total_length_feet <- completed_data$total_length_feet
+
+# Verify missing values again
+missing_values <- nyc_data %>%
+  summarise_all(~sum(is.na(.)))
+print(missing_values)
+```
+
+### Impute Missing Values for total_bike_counts and smoothed_volume
+Impute missing values for total_bike_counts using citi_bike_count and for smoothed_volume using total_volume.
+
+```{r}
+# Impute missing values for `total_bike_counts` using `citi_bike_count`
+model_bike_counts <- lm(total_bike_counts ~ citi_bike_count, data = nyc_data)
+nyc_data <- nyc_data %>%
+  mutate(total_bike_counts = ifelse(is.na(total_bike_counts), predict(model_bike_counts, newdata = nyc_data), total_bike_counts))
+
+# Impute missing values for `smoothed_volume` using `total_volume`
+model_smoothed_volume <- lm(smoothed_volume ~ total_volume, data = nyc_data)
+nyc_data <- nyc_data %>%
+  mutate(smoothed_volume = ifelse(is.na(smoothed_volume), predict(model_smoothed_volume, newdata = nyc_data), smoothed_volume))
+
+# Verify missing values again
+missing_values <- nyc_data %>%
+  summarise_all(~sum(is.na(.)))
+
+print(missing_values)
+```
+
+## Visualize the Data
+
+```{r}
+# Make line plots for all variables
+nyc_data %>%
+  gather(key = "variable", value = "value", -month_year) %>%
+  ggplot(aes(x = month_year, y = value, color = variable)) +
+  geom_line() +
+  facet_wrap(~ variable, scales = "free_y") +
+  labs(title = "NYC Data Over Time", x = "Month", y = "Value") +
+  theme_minimal()
+```
+
+## Relationships Between Variables
+
+```{r}
+# Relationship between citi bike count and total bike counts to verify using bike share data as a proxy for bike usage using line plot on scaled data
+nyc_data %>%
+  select(month_year, citi_bike_count, total_bike_counts) %>%
+  mutate(across(c(citi_bike_count, total_bike_counts), scale)) %>%
+  rename("Citi Bike Usage" = citi_bike_count, "Total Bike Usage" = total_bike_counts) %>%
+  melt(id.vars = "month_year") %>%
+  ggplot(aes(x = month_year, y = value, color = variable)) +
+  geom_line(size = 1.5, alpha = 0.8) + 
+  labs(title = "Bike Usage Trends For All Bikes and Citi Bike", x = "Month", y = "Scaled Value") + 
+  theme_minimal() +
+  theme(
+    legend.position = c(0.85, 0.1),  # Position the legend inside the plot
+    plot.title = element_text(size = 35),  # Increase title size
+    legend.title = element_blank(),  # Remove legend title
+    legend.text = element_text(size = 15)  # Increase legend text size
+  ) +
+  scale_color_brewer(palette = "Set1")  # Use a different color palette
+```
+
+```{r}
+# Select the relevant columns and compute the correlation matrix
+cor_data <- nyc_data %>% 
+  select(smoothed_volume, citi_bike_count, Total_Injured, total_length_feet, biking_proportion)
+
+# Create the correlation plot using ggcorplot
+ggcorr(cor_data,
+       label = TRUE,
+       label_round = 2,
+       label_size = 4,
+       colors = c("blue", "white", "red"),
+       title = "Correlation Matrix Heatmap") +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 20, face = "bold"),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    axis.text.y = element_text(angle = 45, vjust = 1)
+  )
+
+# Use cor_data for a matrix
+cor(cor_data, use = "pairwise.complete.obs")
+```
+
+
+```{r}
+# Create the new dataframe with the selected columns and rename them
+selected_data_nyc <- nyc_data %>%
+  select(
+    date = month_year,
+    mv_traffic = smoothed_volume,
+    bike_lane_addition = total_length_feet,
+    bike_count = citi_bike_count,
+    accidents_count = Total_Injured,
+    total_killed = Total_Killed
+  )
+
+# Display the first few rows of the new dataframe
+head(selected_data_nyc)
+```
+
+```{r}
+# Create a column with the ratio of bike_count to mv_traffic
+selected_data_nyc <- selected_data_nyc %>%
+  mutate(bike_to_traffic_ratio = bike_count / mv_traffic)
+
+# Create a column with cumulative sum of bike_lane_addition
+selected_data_nyc <- selected_data_nyc %>%
+  mutate(cumulative_bike_lane = cumsum(bike_lane_addition))
+
+# Display the first few rows of the updated dataframe
+head(selected_data_nyc)
+```
+
+```{r}
+# Plot the cumulative sum of bike lane additions against bike_to_traffic_ratio
+ggplot(selected_data_nyc, aes(x = cumulative_bike_lane, y = bike_to_traffic_ratio)) +
+  geom_point() +
+  labs(title = "Cumulative Bike Lane Additions vs. Bike to Traffic Ratio", x = "Cumulative Bike Lane Additions", y = "Bike to Traffic Ratio") +
+  theme_minimal()
+```
+
+```{r}
+# Decompose the time series of bike_count and mv_traffic and recreate the bike_to_traffic_ratio with the decomposed values
+
+# First, convert the bike count and motor vehicle traffic to time series objects
+
+selected_data_nyc$bike_count <- ts(selected_data_nyc$bike_count, frequency = 12, start = c(2013, 6))
+selected_data_nyc$mv_traffic <- ts(selected_data_nyc$mv_traffic, frequency = 12, start = c(2013, 6))
+
+decomposed_bike_count <- stl(selected_data_nyc$bike_count, s.window = "periodic")
+decomposed_mv_traffic <- stl(selected_data_nyc$mv_traffic, s.window = "periodic")
+
+# Display the first few rows of the updated dataframe
+head(selected_data_nyc)
+```
+
+```{r}
+# Plot the bike_to_traffic_ratio over time
+ggplot(selected_data_nyc, aes(x = date, y = bike_to_traffic_ratio)) +
+  geom_line() +
+  labs(title = "Decomposed Bike to Traffic Ratio Over Time", x = "Date", y = "Bike to Traffic Ratio") +
+  theme_minimal()
+``` 
+
+```{r}  
+# Convert bike_to_traffic_ratio to a time series and decompose it
+selected_data_nyc$bike_to_traffic_ratio <- ts(selected_data_nyc$bike_to_traffic_ratio, frequency = 12, start = c(2013, 6))
+decomposed_ratio <- stl(selected_data_nyc$bike_to_traffic_ratio, s.window = "periodic")
+
+# Plot the decomposed bike_to_traffic_ratio
+autoplot(decomposed_ratio) + ggtitle("Decomposed Bike to Traffic Ratio") +
+  theme_minimal()
+
+# Extract the trend and seasonality components
+trend_nyc <- decomposed_ratio$time.series[, "trend"]
+seasonal_nyc <- decomposed_ratio$time.series[, "seasonal"]
+```
+
+```{r}
+# Plot the trend of bike_to_traffic_ratio against the trend of bike_lane_addition
+ggplot(selected_data_nyc, aes(x = trend_nyc, y = cumulative_bike_lane)) +
+  geom_point() +
+  labs(title = "Trend of Bike to Traffic Ratio vs. Trend of Cumulative Bike Lane Additions", x = "Trend of Bike to Traffic Ratio", y = "Trend of Cumulative Bike Lane Additions") +
+  theme_minimal()
+``` 
+
+```{r}
+model_linear <- lm(cumulative_bike_lane ~ trend_nyc, data = selected_data_nyc)
+summary(model_linear)
+
+model_log <- lm(cumulative_bike_lane ~ log(trend_nyc + 1), data = selected_data_nyc)
+summary(model_log)
+
+model_exp <- lm(log(cumulative_bike_lane + 1) ~ trend_nyc, data = selected_data_nyc)
+summary(model_exp)
+
+model_logistic <- nls(cumulative_bike_lane ~ SSlogis(trend_nyc, Asym, xmid, scal), data = selected_data_nyc)
+summary(model_logistic)
+
+ggplot(selected_data_nyc, aes(x = trend_nyc, y = cumulative_bike_lane)) +
+  geom_point() +
+  #geom_smooth(method = "lm", formula = y ~ x, se = FALSE, col = "blue") +
+  geom_smooth(method = "lm", formula = y ~ log(x + 1), se = FALSE, col = "red") + 
+  #geom_smooth(method = "lm", formula = y ~ exp(x), se = FALSE, col = "green") + 
+  geom_line(aes(y = fitted(model_logistic)), col = "purple") +
+  labs(title = "Model Fits: Logarithmic, Logistic",
+       x = "Trend of Bike to Traffic Ratio",
+       y = "Cumulative Bike Lane Additions") +
+  theme_minimal() +
+  #scale_color_manual(values = c("blue", "red", "green", "purple"),
+  #                   labels = c("Linear", "Log", "Exponential", "Logistic")) +
+  theme(legend.position = "bottom")
+``` 
+
+```{r}
+ggplot(selected_data_nyc, aes(x = trend, y = cumulative_bike_lane)) +
+  geom_point(aes(color = "Actual Ratio")) +
+  geom_smooth(method = "lm", formula = y ~ log(x + 1), se = FALSE, aes(color = "Logarithmic")) + 
+  geom_line(aes(y = fitted(model_logistic), color = "Logistic")) +
+  labs(title = "NYC Model Fits: Logarithmic, Logistic",
+       y = "Total Amount of Bike Lanes",
+       x = "Trend of Bike to Traffic Ratio") +
+  theme_minimal() +
+  scale_color_manual(values = c("black", "red", "purple"),
+                     labels = c("Actual Ratio", "Logarithmic", "Logistic")) +
+  theme(
+    legend.position = c(0.78, 0.17),
+    plot.title = element_text(size = 30),
+    legend.title = element_blank(),
+    legend.text = element_text(size = 25),
+    axis.title.x = element_text(size = 25),
+    axis.title.y = element_text(size = 25),
+    axis.text.x = element_blank(),
+    axis.text.y = element_blank(),
+    axis.ticks = element_blank()
+  )
+```
+
+The logistic model seems to be the best fit for the data. The pattern of the trend of cumulative bike lane additions against the trend of bike to traffic ratio is similar to a logistic curve, indicating that there may be a saturation point for bike lane additions beyond which the bike to traffic ratio does not increase significantly. However, while a typical logistic curve has a carrying capacity, after which the curve completely flattens out, the data seems to retain a very slight upward trend even after the inflection point. This suggests that the relationship between bike lane additions and the bike to traffic ratio may be more complex than a simple logistic curve can capture. We will keep this as a potential model but explore adding more complexity as well. Additionally, we will consider a logarithmic model as it fits the model reasonable well and also keeps the positive trend after the inflection point.
+
+```{r}
+# Create a new column with the predicted values from the logistic model
+selected_data_nyc$predicted_logistic <- predict(model_logistic)
+
+# Create a new column with the predicted values from the logarithmic model
+selected_data_nyc$predicted_log <- predict(model_log)
+```
+
+# San Francisco Data
+
+```{r}
+# Display the first few rows of the San Francisco dataset
+head(sf_data)
+```
+
+# Repeat a similar process for the San Francisco data
+
+```{r}
+# Delete `total_length_miles`
+sf_data <- sf_data %>%
+  select(-total_length_miles)
+
+# Handle missing values
+missing_values <- sf_data %>%
+  summarise_all(~sum(is.na(.)))
+print(missing_values)
+```
+
+```{r}
+# Remove data from before the bike share network was introduced
+sf_data <- sf_data %>%
+  filter(Month >= "2017-06-")
+
+# Verify missing values again
+missing_values <- sf_data %>%
+  summarise_all(~sum(is.na(.)))
+print(missing_values)
+```
+
+```{r}
+# Print the rows with missing values in any column or a 0 in bay_wheels_count
+sf_data_filtered <- sf_data_complete %>%
+  filter(if_any(everything(), is.na) | bay_wheels_count == 0)
+
+print(sf_data_filtered)
+```  
+
+```{r}
+# Convert Month column to Date format
+sf_data <- sf_data %>%
+  mutate(Month = ymd(paste0(Month, "-01")))
+
+# Create a complete sequence of months
+full_months <- data.frame(Month = seq(min(sf_data$Month, na.rm = TRUE), max(sf_data$Month, na.rm = TRUE), by = "month"))
+
+# Merge with your original data
+sf_data_complete <- full_months %>%
+  left_join(sf_data, by = "Month")
+
+# View the data
+head(sf_data_complete)
+```
+
+```{r}
+# Summarize missing data
+#summary(sf_data_complete)
+
+# Impute missing values
+imputed_data <- mice(sf_data_complete, m = 5, method = 'cart', seed = 123)
+
+# Extract the completed dataset
+sf_data_imputed <- complete(imputed_data, 1)
+
+# View the imputed data
+head(sf_data_imputed)
+```
+
+```{r}
+# verify missing values again
+missing_values <- sf_data_imputed %>%
+  summarise_all(~sum(is.na(.)))
+print(missing_values)
+```
+
+```{r}
+# Create a new dataframe with the selected columns and rename them
+selected_data_sf <- sf_data_imputed %>%
+  select(
+    date = Month,
+    mv_traffic = Total_Volume_ADT,
+    bike_lane_addition = total_length_feet,
+    bike_count = bay_wheels_count,
+    accidents_count = Total_Injured,
+    total_killed = Total_Killed
+  )
+
+# Display the first few rows of the new dataframe
+head(selected_data_sf)
+```
+
+```{r}
+# Create a column with the ratio of bike_count to mv_traffic
+selected_data_sf <- selected_data_sf %>%
+  mutate(bike_to_traffic_ratio = bike_count / mv_traffic)
+
+# Create a column with cumulative sum of bike_lane_addition
+selected_data_sf <- selected_data_sf %>%
+  mutate(cumulative_bike_lane = cumsum(bike_lane_addition))
+
+# Display the first few rows of the updated dataframe
+head(selected_data_sf)
+``` 
+
+```{r}
+# Plot the cumulative sum of bike lane additions over time
+ggplot(selected_data_sf, aes(x = date, y = cumulative_bike_lane)) +
+  geom_line() +
+  labs(title = "Cumulative Bike Lane Additions Over Time", x = "Date", y = "Cumulative Bike Lane Additions") +
+  theme_minimal()
+```    
+
+```{r}
+# Plot the cumulative sum of bike lane additions against bike_to_traffic_ratio
+ggplot(selected_data_sf, aes(x = cumulative_bike_lane, y = bike_to_traffic_ratio)) +
+  geom_point() +
+  labs(title = "Cumulative Bike Lane Additions vs. Bike to Traffic Ratio", x = "Cumulative Bike Lane Additions", y = "Bike to Traffic Ratio") +
+  theme_minimal()
+```   
+
+```{r}
+# Decompose the time series of bike_count and mv_traffic and recreate the bike_to_traffic_ratio with the decomposed values
+
+# First, convert the bike count and motor vehicle traffic to time series objects
+selected_data_sf$bike_count <- ts(selected_data_sf$bike_count, frequency = 12, start = c(2017, 6))
+selected_data_sf$mv_traffic <- ts(selected_data_sf$mv_traffic, frequency = 12, start = c(2017, 6))
+
+decomposed_bike_count_sf <- stl(selected_data_sf$bike_count, s.window = "periodic")
+decomposed_mv_traffic_sf <- stl(selected_data_sf$mv_traffic, s.window = "periodic")
+```
+
+```{r}
+# Convert bike_to_traffic_ratio to a time series and decompose it
+selected_data_sf$bike_to_traffic_ratio <- ts(selected_data_sf$bike_to_traffic_ratio, frequency = 12, start = c(2017, 6))
+decomposed_ratio_sf <- stl(selected_data_sf$bike_to_traffic_ratio, s.window = "periodic")
+
+# Plot the decomposed bike_to_traffic_ratio
+autoplot(decomposed_ratio_sf) + ggtitle("Decomposed Bike to Traffic Ratio") +
+  theme_minimal()
+```
+
+```{r}
+# Extract the trend and seasonality components
+trend_sf <- decomposed_ratio_sf$time.series[, "trend"]
+seasonal_sf <- decomposed_ratio_sf$time.series[, "seasonal"]
+
+# Plot the trend of bike_to_traffic_ratio against the trend of bike_lane_addition
+ggplot(selected_data_sf, aes(x = trend_sf, y = cumulative_bike_lane)) +
+  geom_point() +
+  labs(title = "Trend of Bike to Traffic Ratio vs. Trend of Cumulative Bike Lane Additions", x = "Trend of Bike to Traffic Ratio", y = "Trend of Cumulative Bike Lane Additions") +
+  theme_minimal()
+```  
+
+```{r}
+# Plot the NYC and SF trend of bike_to_traffic_ratio against the trend of bike_lane_addition on separate plots in the same figure
+ggplot(selected_data_nyc, aes(x = trend_nyc, y = cumulative_bike_lane)) +
+  geom_point() +
+  labs(title = "NYC: Trend of Bike to Traffic Ratio vs. Trend of Cumulative Bike Lane Additions", x = "Trend of Bike to Traffic Ratio", y = "Trend of Cumulative Bike Lane Additions") +
+  theme_minimal() +
+  facet_wrap(~ "NYC") +
+  theme(plot.title = element_text(hjust = 0.5))
+```   
+
+```{r}
+# Install and load necessary packages
+library(gridExtra)
+
+# Create the individual plots
+plot_sf <- ggplot(selected_data_sf, aes(x = trend_sf, y = cumulative_bike_lane)) + 
+  geom_point() +
+  labs(title = "SF: Trend of Bike to Traffic Ratio vs. Trend of Cumulative Bike Lane Additions",
+       x = "Trend of Bike to Traffic Ratio",
+       y = "Trend of Cumulative Bike Lane Additions") +
+  theme_minimal()
+
+plot_nyc <- ggplot(selected_data_nyc, aes(x = trend_nyc, y = cumulative_bike_lane)) + 
+  geom_point() +
+  labs(title = "NYC: Trend of Bike to Traffic Ratio vs. Trend of Cumulative Bike Lane Additions",
+       x = "Trend of Bike to Traffic Ratio",
+       y = "Trend of Cumulative Bike Lane Additions") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+# Arrange plots side by side
+grid.arrange(plot_sf, plot_nyc, ncol = 2)
+```
+
+```{r}
+model_linear_sf <- lm(cumulative_bike_lane ~ trend_sf, data = selected_data_sf)
+summary(model_linear_sf)
+
+model_log_sf <- lm(cumulative_bike_lane ~ log(trend_sf + 1), data = selected_data_sf)
+summary(model_log_sf)
+
+model_exp_sf <- lm(log(cumulative_bike_lane + 1) ~ trend_sf, data = selected_data_sf)
+summary(model_exp_sf)
+
+model_logistic_sf <- nls(cumulative_bike_lane ~ SSlogis(trend_sf, Asym, xmid, scal),
+                         data = selected_data_sf,
+                          start = list(Asym = max(selected_data_sf$cumulative_bike_lane) * 1.1,
+                                       xmid = 4,
+                                       scal = 0.5))
+summary(model_logistic_sf)
+```
+
+```{r}
+ggplot(selected_data_sf, aes(x = trend_sf, y = cumulative_bike_lane)) +
+  geom_point(aes(color = "Actual Ratio")) +
+  geom_smooth(method = "lm", formula = y ~ log(x + 1), se = FALSE, aes(color = "Logarithmic")) +
+  geom_line(aes(y = fitted(model_logistic_sf), color = "Logistic")) +
+  labs(title = "SF Model Fits: Logarithmic, Logistic",
+       x = "Trend of Bike to Traffic Ratio",
+       y = "Trend of Cumulative Bike Lane Additions") +
+  theme_minimal() +
+  scale_color_manual(values = c("black", "red", "purple"),
+                     labels = c("Actual Ratio", "Logarithmic", "Logistic")) +
+  theme(
+    legend.position = c(0.78, 0.17),
+    plot.title = element_text(size = 30),
+    legend.title = element_blank(),
+    legend.text = element_text(size = 25),
+    axis.title.x = element_text(size = 25),
+    axis.title.y = element_text(size = 25),
+    axis.text.x = element_blank(),
+    axis.text.y = element_blank(),
+    axis.ticks = element_blank()
+  )
+```
+
+The San Fracisco data is a smaller dataset than the NYC data, but it shows a similar trend in the relationship between bike lane additions and the bike to traffic ratio. It also seems to follow a logistic curve pattern, indicating a saturation point for bike lane additions. However, this too fits a logarthimic model reasonably well and retains a slight positive trend after the inflection point. We will keep the logistic model as a potential model but explore adding more complexity as well. Additionally, we will consider a logarithmic model as it fits the model reasonably well and also keeps the positive trend after the inflection point. The logarithmic model is also a more logical fit for bike lane additions, as it is unlikely for these to be a strict saturation point where no more bike lanes can be added, while the effect slowing down as more bike lanes are added is more likely.
+
+## Analyze total accidetnts and total killed relative to bike to traffic ratio
+
+```{r}
+# Create a new column with the combined injuries and deaths
+nyc_data_temp <- nyc_data %>%
+  mutate(total_injuries_deaths = Total_Injured + 5*Total_Killed)
+
+# Plot the trend of bike_to_traffic_ratio against the trend of total_injuries_deaths
+ggplot(nyc_data_temp, aes(x = trend_nyc, y = total_injuries_deaths)) +
+  geom_point() +
+  labs(title = "NYC: Trend of Bike to Traffic Ratio vs. Trend of Total Injuries and Deaths", x = "Trend of Bike to Traffic Ratio", y = "Trend of Total Injuries and Deaths") +
+  theme_minimal()
+```  
+
+```{r}
+nyc_data_temp <- nyc_data_temp %>%
+  rename(date = month_year)
+
+# Now you can perform the join
+selected_data_nyc <- selected_data_nyc %>%
+  left_join(nyc_data_temp, by = "date")
+```  
+
+```{r}
+# Plot total_injuries_deaths against cumulative_bike_lane
+ggplot(selected_data_nyc, aes(x = cumulative_bike_lane, y = total_injuries_deaths)) +
+  geom_point() +
+  labs(title = "NYC: Cumulative Bike Lane Additions vs. Total Injuries and Deaths", x = "Cumulative Bike Lane Additions", y = "Total Injuries and Deaths") +
+  theme_minimal()
+``` 
+
+```{r}
+# Plot total_injuries_deaths against traffic volume
+ggplot(selected_data_nyc, aes(x = mv_traffic, y = total_injuries_deaths)) +
+  geom_point() +
+  labs(title = "NYC: Motor Vehicle Traffic Volume vs. Total Injuries and Deaths", x = "Motor Vehicle Traffic Volume", y = "Total Injuries and Deaths") +
+  theme_minimal()
+```  
+
+```{r}
+# Try a linear regression model for the relationship between total_injuries_deaths and traffic volume
+model_linear_nyc_injuries <- lm(total_injuries_deaths ~ mv_traffic, data = selected_data_nyc)
+summary(model_linear_nyc_injuries)
+```
+
+While there does not seem to be a statistically significant relationship between the bike to traffic ratio and the total injuries and deaths, there is a clear positive relationship between the motor vehicle traffic volume and the total injuries and deaths. That being the case, there must be a relationship between people choosing fewer cars (indicated by a higher bike to traffic ratio) and fewer injuries and deaths. This wasn't captured in the linear model, but that is likely due to it beinng a very small effect relative to total traffic volume. Having established this relationship, and also a positive logarithmic relationship between bike lane additions and the bike to traffic ratio, we can infer a positive relationship between bike lane additions and fewer injuries and deaths.
+
+```{r}
+# Model logarithmic relationship between bike lane additions and bike to traffic ratio, linear relationship between bike to traffic ratio and total injuries and deaths, linear relationship between motor vehicle traffic volume and total injuries and deaths
+
+log_lane_bike_ratio <- lm(cumulative_bike_lane ~ log(trend_nyc + 1), data = selected_data_nyc)
+linear_bike_ratio_injuries <- lm(total_injuries_deaths ~ trend_nyc, data = selected_data_nyc)
+linear_traffic_injuries <- lm(total_injuries_deaths ~ mv_traffic, data = selected_data_nyc)
+
+# Print the summary of the models
+summary(log_lane_bike_ratio)
+summary(linear_bike_ratio_injuries)
+summary(linear_traffic_injuries)
+
+# Tidy up the model summaries and remove intercept rows
+tidy_log_lane_bike_ratio <- tidy(log_lane_bike_ratio) %>% filter(term != "(Intercept)")
+tidy_bike_ratio_injuries <- tidy(bike_ratio_injuries) %>% filter(term != "(Intercept)")
+tidy_traffic_injuries <- tidy(traffic_injuries) %>% filter(term != "(Intercept)")
+
+# Rename the terms for clarity
+tidy_log_lane_bike_ratio <- tidy_log_lane_bike_ratio %>% mutate(term = "Log-Transformed Bike-to-Traffic Ratio")
+tidy_bike_ratio_injuries <- tidy_bike_ratio_injuries %>% mutate(term = "Bike-to-Traffic Ratio")
+tidy_traffic_injuries <- tidy_traffic_injuries %>% mutate(term = "Motor Vehicle Traffic Volume")
+
+# Get the model statistics
+glance_log_lane_bike_ratio <- glance(log_lane_bike_ratio)
+glance_bike_ratio_injuries <- glance(bike_ratio_injuries)
+glance_traffic_injuries <- glance(traffic_injuries)
+
+# Combine the model statistics with the summaries
+model_summaries <- bind_rows(
+  mutate(tidy_log_lane_bike_ratio, Model = "Log Lane-Bike Ratio Model", `R-Squared` = glance_log_lane_bike_ratio$r.squared),
+  mutate(tidy_bike_ratio_injuries, Model = "Bike Ratio-Injuries Model", `R-Squared` = glance_bike_ratio_injuries$r.squared),
+  mutate(tidy_traffic_injuries, Model = "Traffic-Injuries Model", `R-Squared` = glance_traffic_injuries$r.squared)
+)
+
+# Color insignificant p-values red
+model_summaries <- model_summaries %>%
+  mutate(`P-Value` = ifelse(p.value > 0.05, cell_spec(p.value, color = "red"), p.value)) %>%
+  select(Model, Term = term, Estimate = estimate, `Standard Error` = std.error, `t-Value` = statistic, `P-Value`, `R-Squared`)
+
+# Create and format the table
+model_summaries %>%
+  kable("html", escape = FALSE, caption = "Model Summaries for Various Relationships") %>%
+  kable_styling(full_width = FALSE, position = "left", bootstrap_options = c("striped", "hover", "condensed", "responsive")) %>%
+  row_spec(0, bold = TRUE, background = "#4CAF50", color = "white") %>%
+  row_spec(seq(1, nrow(model_summaries), by = 2), background = "#f2f2f2") %>%
+  row_spec(seq(2, nrow(model_summaries), by = 2), background = "#e0e0e0") %>%
+  column_spec(1:7, border_left = TRUE, border_right = TRUE) %>%
+  add_header_above(c(" " = 1, "Model Summary" = 6))
+
+```
+
+```{r}
+# Repeat for San Francisco data
+# Calculate cumulative bike lane additions and total injuries and deaths
+selected_data_sf <- selected_data_sf %>%
+  mutate(cumulative_bike_lane = cumsum(bike_lane_addition),
+          total_injuries_deaths = accidents_count + 5*total_killed)
+
+# Plot traffic volume against total injuries and deaths
+ggplot(selected_data_sf, aes(x = mv_traffic, y = total_injuries_deaths)) +
+  geom_point() +
+  labs(title = "SF: Motor Vehicle Traffic Volume vs. Total Injuries and Deaths", x = "Motor Vehicle Traffic Volume", y = "Total Injuries and Deaths") +
+  theme_minimal()
+```  
+
+```{r}
+# Model logarithmic relationship between bike lane additions and bike to traffic ratio, linear relationship between bike to traffic ratio and total injuries and deaths, linear relationship between motor vehicle traffic volume and total injuries and deaths
+
+log_lane_bike_ratio_sf <- lm(cumulative_bike_lane ~ log(trend_sf + 1), data = selected_data_sf)
+linear_bike_ratio_injuries_sf <- lm(total_injuries_deaths ~ trend_sf, data = selected_data_sf)
+linear_traffic_injuries_sf <- lm(total_injuries_deaths ~ mv_traffic, data = selected_data_sf)
+
+# Print the summary of the models
+summary(log_lane_bike_ratio_sf)
+summary(linear_bike_ratio_injuries_sf)
+summary(linear_traffic_injuries_sf)
+```

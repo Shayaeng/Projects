@@ -1,0 +1,2309 @@
+---
+title: "Draft - Final Paper"
+author: "Shaya Engelman"
+date: '`r Sys.Date()`'
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+set.seed(1125)
+```
+
+```{r}
+# Load necessary packages
+library(tidyverse)
+library(data.table)
+library(mice)
+library(GGally)
+library(lubridate)
+
+```
+
+# Data Collection
+
+## Read Datasets
+
+```{r}
+nyc_data <- fread("C:\\Users\\shaya\\OneDrive\\Documents\\repos\\Data698\\Research Project\\nyc_dataset.csv")
+sf_data <- fread("C:\\Users\\shaya\\OneDrive\\Documents\\repos\\Data698\\Research Project\\sf_dataset.csv")
+chicago_data <- fread("C:\\Users\\shaya\\OneDrive\\Documents\\repos\\Data698\\Research Project\\chicago_dataset.csv")
+```
+
+# Data Exploration
+
+## NYC Data
+
+```{r}
+summary(nyc_data)
+```
+
+- Delete `total_length_miles`
+- Handle missing values
+- Check for outliers/anomalies
+- Explore distributions of variables
+- Identify relationships between variables
+- Identify potential confounding variables
+
+## Delete `total_length_miles`
+
+```{r}
+# Delete `total_length_miles`
+nyc_data <- nyc_data %>%
+  select(-total_length_miles)
+```
+
+## Handle Missing Values
+
+Identify and address missing values in the dataset.
+
+
+```{r}
+# Handle missing values
+missing_values <- nyc_data %>%
+  summarise_all(~sum(is.na(.)))
+print(missing_values)
+```
+
+### Remove Data from Before Citibike Introduction
+Remove data from before the Citibike network was introduced, as it changes the dynamics of bike usage.
+
+```{r}
+# Delete rows from before Citibike was introduced: month 2013-06
+nyc_data <- nyc_data %>%
+  filter(month_year >= "2013-06-01")
+
+# Verify missing values again
+missing_values <- nyc_data %>%
+  summarise_all(~sum(is.na(.)))
+print(missing_values)
+```
+
+### Impute Missing Values for total_length_feet
+Use the mice package to impute missing values for `total_length_feet`.
+
+```{r}
+# Impute missing values using mice
+impute_data <- mice(nyc_data, m = 5, method = 'cart', seed = 123)
+completed_data <- complete(impute_data)
+
+# Update nyc_data with imputed values
+nyc_data$total_length_feet <- completed_data$total_length_feet
+
+# Verify missing values again
+missing_values <- nyc_data %>%
+  summarise_all(~sum(is.na(.)))
+print(missing_values)
+```
+
+### Impute Missing Values for total_bike_counts and smoothed_volume
+Impute missing values for total_bike_counts using citi_bike_count and for smoothed_volume using total_volume.
+
+```{r}
+# Impute missing values for `total_bike_counts` using `citi_bike_count`
+model_bike_counts <- lm(total_bike_counts ~ citi_bike_count, data = nyc_data)
+nyc_data <- nyc_data %>%
+  mutate(total_bike_counts = ifelse(is.na(total_bike_counts), predict(model_bike_counts, newdata = nyc_data), total_bike_counts))
+
+# Impute missing values for `smoothed_volume` using `total_volume`
+model_smoothed_volume <- lm(smoothed_volume ~ total_volume, data = nyc_data)
+nyc_data <- nyc_data %>%
+  mutate(smoothed_volume = ifelse(is.na(smoothed_volume), predict(model_smoothed_volume, newdata = nyc_data), smoothed_volume))
+
+# Verify missing values again
+missing_values <- nyc_data %>%
+  summarise_all(~sum(is.na(.)))
+
+print(missing_values)
+```
+
+## Visualize the Data
+
+```{r}
+# Make line plots for all variables
+nyc_data %>%
+  gather(key = "variable", value = "value", -month_year) %>%
+  ggplot(aes(x = month_year, y = value, color = variable)) +
+  geom_line() +
+  facet_wrap(~ variable, scales = "free_y") +
+  labs(title = "NYC Data Over Time", x = "Month", y = "Value") +
+  theme_minimal()
+```
+
+## Relationships Between Variables
+
+```{r}
+# Relationship between citi bike count and total bike counts to verify using bike share data as a proxy for bike usage using line plot on scaled data
+nyc_data %>%
+  select(month_year, citi_bike_count, total_bike_counts) %>%
+  mutate(across(c(citi_bike_count, total_bike_counts), scale)) %>%
+  rename("Citi Bike Usage" = citi_bike_count, "Total Bike Usage" = total_bike_counts) %>%
+  melt(id.vars = "month_year") %>%
+  ggplot(aes(x = month_year, y = value, color = variable)) +
+  geom_line(size = 1.5, alpha = 0.8) + 
+  labs(title = "Bike Usage Trends For All Bikes and Citi Bike", x = "Month", y = "Scaled Value") + 
+  theme_minimal() +
+  theme(
+    legend.position = c(0.85, 0.1),  # Position the legend inside the plot
+    plot.title = element_text(size = 35),  # Increase title size
+    legend.title = element_blank(),  # Remove legend title
+    legend.text = element_text(size = 15)  # Increase legend text size
+  ) +
+  scale_color_brewer(palette = "Set1")  # Use a different color palette
+```
+
+```{r}
+# Select the relevant columns and compute the correlation matrix
+cor_data <- nyc_data %>% 
+  select(smoothed_volume, citi_bike_count, Total_Injured, total_length_feet)
+
+# Create the correlation plot using ggcorplot
+ggcorr(cor_data,
+       label = TRUE,
+       label_round = 2,
+       label_size = 4,
+       colors = c("blue", "white", "red"),
+       title = "Correlation Matrix Heatmap") +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 20, face = "bold"),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    axis.text.y = element_text(angle = 45, vjust = 1)
+  )
+
+# Use cor_data for a matrix
+cor(cor_data, use = "pairwise.complete.obs")
+```
+
+
+```{r}
+# Create the new dataframe with the selected columns and rename them
+selected_data_nyc <- nyc_data %>%
+  select(
+    date = month_year,
+    mv_traffic = smoothed_volume,
+    bike_lane_addition = total_length_feet,
+    bike_count = citi_bike_count,
+    accidents_count = Total_Injured,
+    total_killed = Total_Killed
+  )
+
+# Display the first few rows of the new dataframe
+head(selected_data_nyc)
+```
+
+```{r}
+# Create a column with the ratio of bike_count to mv_traffic
+selected_data_nyc <- selected_data_nyc %>%
+  mutate(bike_to_traffic_ratio = bike_count / mv_traffic)
+
+# Create a column with cumulative sum of bike_lane_addition
+selected_data_nyc <- selected_data_nyc %>%
+  mutate(cumulative_bike_lane = cumsum(bike_lane_addition))
+
+# Display the first few rows of the updated dataframe
+head(selected_data_nyc)
+```
+
+```{r}
+# Plot the cumulative sum of bike lane additions against bike_to_traffic_ratio
+ggplot(selected_data_nyc, aes(x = cumulative_bike_lane, y = bike_to_traffic_ratio)) +
+  geom_point() +
+  labs(title = "Cumulative Bike Lane Additions vs. Bike to Traffic Ratio", x = "Cumulative Bike Lane Additions", y = "Bike to Traffic Ratio") +
+  theme_minimal()
+```
+
+```{r}
+# Decompose the time series of bike_count and mv_traffic and recreate the bike_to_traffic_ratio with the decomposed values
+
+# First, convert the bike count and motor vehicle traffic to time series objects
+
+selected_data_nyc$bike_count <- ts(selected_data_nyc$bike_count, frequency = 12, start = c(2013, 6))
+selected_data_nyc$mv_traffic <- ts(selected_data_nyc$mv_traffic, frequency = 12, start = c(2013, 6))
+
+decomposed_bike_count <- stl(selected_data_nyc$bike_count, s.window = "periodic")
+decomposed_mv_traffic <- stl(selected_data_nyc$mv_traffic, s.window = "periodic")
+
+# Display the first few rows of the updated dataframe
+head(selected_data_nyc)
+```
+
+```{r}
+# Plot the bike_to_traffic_ratio over time
+ggplot(selected_data_nyc, aes(x = date, y = bike_to_traffic_ratio)) +
+  geom_line() +
+  labs(title = "Decomposed Bike to Traffic Ratio Over Time", x = "Date", y = "Bike to Traffic Ratio") +
+  theme_minimal()
+``` 
+
+```{r}  
+# Convert bike_to_traffic_ratio to a time series and decompose it
+selected_data_nyc$bike_to_traffic_ratio <- ts(selected_data_nyc$bike_to_traffic_ratio, frequency = 12, start = c(2013, 6))
+decomposed_ratio <- stl(selected_data_nyc$bike_to_traffic_ratio, s.window = "periodic")
+
+# Plot the decomposed bike_to_traffic_ratio
+autoplot(decomposed_ratio) + ggtitle("Decomposed Bike to Traffic Ratio") +
+  theme_minimal()
+
+# Extract the trend and seasonality components
+trend_nyc <- decomposed_ratio$time.series[, "trend"]
+seasonal_nyc <- decomposed_ratio$time.series[, "seasonal"]
+```
+
+```{r}
+# Plot the trend of bike_to_traffic_ratio against the trend of bike_lane_addition
+ggplot(selected_data_nyc, aes(x = trend_nyc, y = cumulative_bike_lane)) +
+  geom_point(size=6, shape = 19) +
+  labs(title = "Trend of Bike to Traffic Ratio vs. Trend of Cumulative Bike Lane Additions", x = "Trend of Bike to Traffic Ratio", y = "Trend of Cumulative Bike Lane Additions") +
+  theme_minimal()
+``` 
+
+```{r}
+model_linear <- lm(cumulative_bike_lane ~ trend_nyc, data = selected_data_nyc)
+summary(model_linear)
+
+model_log <- lm(cumulative_bike_lane ~ log(trend_nyc + 1), data = selected_data_nyc)
+summary(model_log)
+
+model_exp <- lm(log(cumulative_bike_lane + 1) ~ trend_nyc, data = selected_data_nyc)
+summary(model_exp)
+
+model_logistic <- nls(cumulative_bike_lane ~ SSlogis(trend_nyc, Asym, xmid, scal), data = selected_data_nyc)
+summary(model_logistic)
+
+ggplot(selected_data_nyc, aes(x = trend_nyc, y = cumulative_bike_lane)) +
+  geom_point() +
+  #geom_smooth(method = "lm", formula = y ~ x, se = FALSE, col = "blue") +
+  geom_smooth(method = "lm", formula = y ~ log(x + 1), se = FALSE, col = "red") + 
+  #geom_smooth(method = "lm", formula = y ~ exp(x), se = FALSE, col = "green") + 
+  geom_line(aes(y = fitted(model_logistic)), col = "purple") +
+  labs(title = "Model Fits: Logarithmic, Logistic",
+       x = "Trend of Bike to Traffic Ratio",
+       y = "Cumulative Bike Lane Additions") +
+  theme_minimal() +
+  #scale_color_manual(values = c("blue", "red", "green", "purple"),
+  #                   labels = c("Linear", "Log", "Exponential", "Logistic")) +
+  theme(legend.position = "bottom")
+``` 
+
+```{r}
+ggplot(selected_data_nyc, aes(x = trend, y = cumulative_bike_lane)) +
+  geom_point(aes(color = "Actual Ratio")) +
+  geom_smooth(method = "lm", formula = y ~ log(x + 1), se = FALSE, aes(color = "Logarithmic")) + 
+  geom_line(aes(y = fitted(model_logistic), color = "Logistic")) +
+  labs(title = "NYC Model Fits: Logarithmic, Logistic",
+       y = "Total Amount of Bike Lanes",
+       x = "Trend of Bike to Traffic Ratio") +
+  theme_minimal() +
+  scale_color_manual(values = c("black", "red", "purple"),
+                     labels = c("Actual Ratio", "Logarithmic", "Logistic")) +
+  theme(
+    legend.position = c(0.78, 0.17),
+    plot.title = element_text(size = 30),
+    legend.title = element_blank(),
+    legend.text = element_text(size = 25),
+    axis.title.x = element_text(size = 25),
+    axis.title.y = element_text(size = 25),
+    axis.text.x = element_blank(),
+    axis.text.y = element_blank(),
+    axis.ticks = element_blank()
+  )
+```
+
+The logistic model seems to be the best fit for the data. The pattern of the trend of cumulative bike lane additions against the trend of bike to traffic ratio is similar to a logistic curve, indicating that there may be a saturation point for bike lane additions beyond which the bike to traffic ratio does not increase significantly. However, while a typical logistic curve has a carrying capacity, after which the curve completely flattens out, the data seems to retain a very slight upward trend even after the inflection point. This suggests that the relationship between bike lane additions and the bike to traffic ratio may be more complex than a simple logistic curve can capture. We will keep this as a potential model but explore adding more complexity as well. Additionally, we will consider a logarithmic model as it fits the model reasonable well and also keeps the positive trend after the inflection point.
+
+```{r}
+# Create a new column with the predicted values from the logistic model
+selected_data_nyc$predicted_logistic <- predict(model_logistic)
+
+# Create a new column with the predicted values from the logarithmic model
+selected_data_nyc$predicted_log <- predict(model_log)
+
+# Make a copy
+nyc_data_copy <- nyc_data
+
+# Add the total citi bike count to the selected data
+nyc_data_copy$citi_bike_count <- nyc_data$citi_bike_count
+```
+
+# San Francisco Data
+
+```{r}
+# Display the first few rows of the San Francisco dataset
+head(sf_data)
+```
+
+# Repeat a similar process for the San Francisco data
+
+```{r}
+# Delete `total_length_miles`
+sf_data <- sf_data %>%
+  select(-total_length_miles)
+
+# Handle missing values
+missing_values <- sf_data %>%
+  summarise_all(~sum(is.na(.)))
+print(missing_values)
+```
+
+```{r}
+# Remove data from before the bike share network was introduced
+sf_data <- sf_data %>%
+  filter(Month >= "2017-06-")
+
+# Verify missing values again
+missing_values <- sf_data %>%
+  summarise_all(~sum(is.na(.)))
+print(missing_values)
+```
+
+```{r}
+# Print the rows with missing values in any column or a 0 in bay_wheels_count
+sf_data_filtered <- sf_data_complete %>%
+  filter(if_any(everything(), is.na) | bay_wheels_count == 0)
+
+print(sf_data_filtered)
+```  
+
+```{r}
+# Convert Month column to Date format
+sf_data <- sf_data %>%
+  mutate(Month = ymd(paste0(Month, "-01")))
+
+# Create a complete sequence of months
+full_months <- data.frame(Month = seq(min(sf_data$Month, na.rm = TRUE), max(sf_data$Month, na.rm = TRUE), by = "month"))
+
+# Merge with your original data
+sf_data_complete <- full_months %>%
+  left_join(sf_data, by = "Month")
+
+# View the data
+head(sf_data_complete)
+```
+
+```{r}
+# Summarize missing data
+#summary(sf_data_complete)
+
+# Impute missing values
+imputed_data <- mice(sf_data_complete, m = 5, method = 'cart', seed = 123)
+
+# Extract the completed dataset
+sf_data_imputed <- complete(imputed_data, 1)
+
+# View the imputed data
+head(sf_data_imputed)
+```
+
+```{r}
+# verify missing values again
+missing_values <- sf_data_imputed %>%
+  summarise_all(~sum(is.na(.)))
+print(missing_values)
+```
+
+```{r}
+# Create a new dataframe with the selected columns and rename them
+selected_data_sf <- sf_data_imputed %>%
+  select(
+    date = Month,
+    mv_traffic = Total_Volume_ADT,
+    bike_lane_addition = total_length_feet,
+    bike_count = bay_wheels_count,
+    accidents_count = Total_Injured,
+    total_killed = Total_Killed
+  )
+
+# Display the first few rows of the new dataframe
+head(selected_data_sf)
+```
+
+```{r}
+# Create a column with the ratio of bike_count to mv_traffic
+selected_data_sf <- selected_data_sf %>%
+  mutate(bike_to_traffic_ratio = bike_count / mv_traffic)
+
+# Create a column with cumulative sum of bike_lane_addition
+selected_data_sf <- selected_data_sf %>%
+  mutate(cumulative_bike_lane = cumsum(bike_lane_addition))
+
+# Display the first few rows of the updated dataframe
+head(selected_data_sf)
+``` 
+
+```{r}
+# Plot the cumulative sum of bike lane additions over time
+ggplot(selected_data_sf, aes(x = date, y = cumulative_bike_lane)) +
+  geom_line() +
+  labs(title = "Cumulative Bike Lane Additions Over Time", x = "Date", y = "Cumulative Bike Lane Additions") +
+  theme_minimal()
+```    
+
+```{r}
+# Plot the cumulative sum of bike lane additions against bike_to_traffic_ratio
+ggplot(selected_data_sf, aes(x = cumulative_bike_lane, y = bike_to_traffic_ratio)) +
+  geom_point() +
+  labs(title = "Cumulative Bike Lane Additions vs. Bike to Traffic Ratio", x = "Cumulative Bike Lane Additions", y = "Bike to Traffic Ratio") +
+  theme_minimal()
+```   
+
+```{r}
+# Decompose the time series of bike_count and mv_traffic and recreate the bike_to_traffic_ratio with the decomposed values
+
+# First, convert the bike count and motor vehicle traffic to time series objects
+selected_data_sf$bike_count <- ts(selected_data_sf$bike_count, frequency = 12, start = c(2017, 6))
+selected_data_sf$mv_traffic <- ts(selected_data_sf$mv_traffic, frequency = 12, start = c(2017, 6))
+
+decomposed_bike_count_sf <- stl(selected_data_sf$bike_count, s.window = "periodic")
+decomposed_mv_traffic_sf <- stl(selected_data_sf$mv_traffic, s.window = "periodic")
+```
+
+```{r}
+# Convert bike_to_traffic_ratio to a time series and decompose it
+selected_data_sf$bike_to_traffic_ratio <- ts(selected_data_sf$bike_to_traffic_ratio, frequency = 12, start = c(2017, 6))
+decomposed_ratio_sf <- stl(selected_data_sf$bike_to_traffic_ratio, s.window = "periodic")
+
+# Plot the decomposed bike_to_traffic_ratio
+autoplot(decomposed_ratio_sf) + ggtitle("Decomposed Bike to Traffic Ratio") +
+  theme_minimal()
+```
+
+```{r}
+# Extract the trend and seasonality components
+trend_sf <- decomposed_ratio_sf$time.series[, "trend"]
+seasonal_sf <- decomposed_ratio_sf$time.series[, "seasonal"]
+
+# Plot the trend of bike_to_traffic_ratio against the trend of bike_lane_addition
+ggplot(selected_data_sf, aes(x = trend_sf, y = cumulative_bike_lane)) +
+  geom_point() +
+  labs(title = "Trend of Bike to Traffic Ratio vs. Trend of Cumulative Bike Lane Additions", x = "Trend of Bike to Traffic Ratio", y = "Trend of Cumulative Bike Lane Additions") +
+  theme_minimal()
+```  
+
+```{r}
+# Plot the NYC and SF trend of bike_to_traffic_ratio against the trend of bike_lane_addition on separate plots in the same figure
+ggplot(selected_data_nyc, aes(x = trend_nyc, y = cumulative_bike_lane)) +
+  geom_point() +
+  labs(title = "NYC: Trend of Bike to Traffic Ratio vs. Trend of Cumulative Bike Lane Additions", x = "Trend of Bike to Traffic Ratio", y = "Trend of Cumulative Bike Lane Additions") +
+  theme_minimal() +
+  facet_wrap(~ "NYC") +
+  theme(plot.title = element_text(hjust = 0.5))
+```   
+
+```{r}
+# Install and load necessary packages
+library(gridExtra)
+
+# Create the individual plots
+plot_sf <- ggplot(selected_data_sf, aes(x = trend_sf, y = cumulative_bike_lane)) + 
+  geom_point() +
+  labs(title = "SF: Trend of Bike to Traffic Ratio vs. Trend of Cumulative Bike Lane Additions",
+       x = "Trend of Bike to Traffic Ratio",
+       y = "Trend of Cumulative Bike Lane Additions") +
+  theme_minimal()
+
+plot_nyc <- ggplot(selected_data_nyc, aes(x = trend_nyc, y = cumulative_bike_lane)) + 
+  geom_point() +
+  labs(title = "NYC: Trend of Bike to Traffic Ratio vs. Trend of Cumulative Bike Lane Additions",
+       x = "Trend of Bike to Traffic Ratio",
+       y = "Trend of Cumulative Bike Lane Additions") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+# Arrange plots side by side
+grid.arrange(plot_sf, plot_nyc, ncol = 2)
+```
+
+```{r}
+model_linear_sf <- lm(cumulative_bike_lane ~ trend_sf, data = selected_data_sf)
+summary(model_linear_sf)
+
+model_log_sf <- lm(cumulative_bike_lane ~ log(trend_sf + 1), data = selected_data_sf)
+summary(model_log_sf)
+
+model_exp_sf <- lm(log(cumulative_bike_lane + 1) ~ trend_sf, data = selected_data_sf)
+summary(model_exp_sf)
+
+model_logistic_sf <- nls(cumulative_bike_lane ~ SSlogis(trend_sf, Asym, xmid, scal),
+                         data = selected_data_sf,
+                          start = list(Asym = max(selected_data_sf$cumulative_bike_lane) * 1.1,
+                                       xmid = 4,
+                                       scal = 0.5))
+summary(model_logistic_sf)
+```
+
+```{r}
+ggplot(selected_data_sf, aes(x = trend_sf, y = cumulative_bike_lane)) +
+  geom_point(aes(color = "Actual Ratio")) +
+  geom_smooth(method = "lm", formula = y ~ log(x + 1), se = FALSE, aes(color = "Logarithmic")) +
+  geom_line(aes(y = fitted(model_logistic_sf), color = "Logistic")) +
+  labs(title = "SF Model Fits: Logarithmic, Logistic",
+       x = "Trend of Bike to Traffic Ratio",
+       y = "Trend of Cumulative Bike Lane Additions") +
+  theme_minimal() +
+  scale_color_manual(values = c("black", "red", "purple"),
+                     labels = c("Actual Ratio", "Logarithmic", "Logistic")) +
+  theme(
+    legend.position = c(0.78, 0.17),
+    plot.title = element_text(size = 30),
+    legend.title = element_blank(),
+    legend.text = element_text(size = 25),
+    axis.title.x = element_text(size = 25),
+    axis.title.y = element_text(size = 25),
+    axis.text.x = element_blank(),
+    axis.text.y = element_blank(),
+    axis.ticks = element_blank()
+  )
+```
+
+The San Fracisco data is a smaller dataset than the NYC data, but it shows a similar trend in the relationship between bike lane additions and the bike to traffic ratio. It also seems to follow a logistic curve pattern, indicating a saturation point for bike lane additions. However, this too fits a logarthimic model reasonably well and retains a slight positive trend after the inflection point. We will keep the logistic model as a potential model but explore adding more complexity as well. Additionally, we will consider a logarithmic model as it fits the model reasonably well and also keeps the positive trend after the inflection point. The logarithmic model is also a more logical fit for bike lane additions, as it is unlikely for these to be a strict saturation point where no more bike lanes can be added, while the effect slowing down as more bike lanes are added is more likely.
+
+## Analyze total accidetnts and total killed relative to bike to traffic ratio
+
+```{r}
+# Create a new column with the combined injuries and deaths
+nyc_data_temp <- nyc_data %>%
+  mutate(total_injuries_deaths = Total_Injured + 5*Total_Killed)
+
+# Plot the trend of bike_to_traffic_ratio against the trend of total_injuries_deaths
+ggplot(nyc_data_temp, aes(x = trend_nyc, y = total_injuries_deaths)) +
+  geom_point() +
+  labs(title = "NYC: Trend of Bike to Traffic Ratio vs. Trend of Total Injuries and Deaths", x = "Trend of Bike to Traffic Ratio", y = "Trend of Total Injuries and Deaths") +
+  theme_minimal()
+```  
+
+```{r}
+nyc_data_temp <- nyc_data_temp %>%
+  rename(date = month_year)
+
+# Now you can perform the join
+selected_data_nyc <- selected_data_nyc %>%
+  left_join(nyc_data_temp, by = "date")
+```  
+
+```{r}
+# Plot total_injuries_deaths against cumulative_bike_lane
+ggplot(selected_data_nyc, aes(x = cumulative_bike_lane, y = total_injuries_deaths)) +
+  geom_point() +
+  labs(title = "NYC: Cumulative Bike Lane Additions vs. Total Injuries and Deaths", x = "Cumulative Bike Lane Additions", y = "Total Injuries and Deaths") +
+  theme_minimal()
+``` 
+
+```{r}
+# Plot total_injuries_deaths against traffic volume
+ggplot(selected_data_nyc, aes(x = mv_traffic, y = total_injuries_deaths)) +
+  geom_point() +
+  labs(title = "NYC: Motor Vehicle Traffic Volume vs. Total Injuries and Deaths", x = "Motor Vehicle Traffic Volume", y = "Total Injuries and Deaths") +
+  theme_minimal()
+```  
+
+```{r}
+# Try a linear regression model for the relationship between total_injuries_deaths and traffic volume
+model_linear_nyc_injuries <- lm(total_injuries_deaths ~ mv_traffic, data = selected_data_nyc)
+summary(model_linear_nyc_injuries)
+```
+
+While there does not seem to be a statistically significant relationship between the bike to traffic ratio and the total injuries and deaths, there is a clear positive relationship between the motor vehicle traffic volume and the total injuries and deaths. That being the case, there must be a relationship between people choosing fewer cars (indicated by a higher bike to traffic ratio) and fewer injuries and deaths. This wasn't captured in the linear model, but that is likely due to it beinng a very small effect relative to total traffic volume. Having established this relationship, and also a positive logarithmic relationship between bike lane additions and the bike to traffic ratio, we can infer a positive relationship between bike lane additions and fewer injuries and deaths.
+
+```{r}
+# Model logarithmic relationship between bike lane additions and bike to traffic ratio, linear relationship between bike to traffic ratio and total injuries and deaths, linear relationship between motor vehicle traffic volume and total injuries and deaths
+
+log_lane_bike_ratio <- lm(cumulative_bike_lane ~ log(trend_nyc + 1), data = selected_data_nyc)
+linear_bike_ratio_injuries <- lm(total_injuries_deaths ~ trend_nyc, data = selected_data_nyc)
+linear_traffic_injuries <- lm(total_injuries_deaths ~ mv_traffic, data = selected_data_nyc)
+
+# Print the summary of the models
+summary(log_lane_bike_ratio)
+summary(linear_bike_ratio_injuries)
+summary(linear_traffic_injuries)
+
+# Tidy up the model summaries and remove intercept rows
+tidy_log_lane_bike_ratio <- tidy(log_lane_bike_ratio) %>% filter(term != "(Intercept)")
+tidy_bike_ratio_injuries <- tidy(bike_ratio_injuries) %>% filter(term != "(Intercept)")
+tidy_traffic_injuries <- tidy(traffic_injuries) %>% filter(term != "(Intercept)")
+
+# Rename the terms for clarity
+tidy_log_lane_bike_ratio <- tidy_log_lane_bike_ratio %>% mutate(term = "Log-Transformed Bike-to-Traffic Ratio")
+tidy_bike_ratio_injuries <- tidy_bike_ratio_injuries %>% mutate(term = "Bike-to-Traffic Ratio")
+tidy_traffic_injuries <- tidy_traffic_injuries %>% mutate(term = "Motor Vehicle Traffic Volume")
+
+# Get the model statistics
+glance_log_lane_bike_ratio <- glance(log_lane_bike_ratio)
+glance_bike_ratio_injuries <- glance(bike_ratio_injuries)
+glance_traffic_injuries <- glance(traffic_injuries)
+
+# Combine the model statistics with the summaries
+model_summaries <- bind_rows(
+  mutate(tidy_log_lane_bike_ratio, Model = "Log Lane-Bike Ratio Model", `R-Squared` = glance_log_lane_bike_ratio$r.squared),
+  mutate(tidy_bike_ratio_injuries, Model = "Bike Ratio-Injuries Model", `R-Squared` = glance_bike_ratio_injuries$r.squared),
+  mutate(tidy_traffic_injuries, Model = "Traffic-Injuries Model", `R-Squared` = glance_traffic_injuries$r.squared)
+)
+
+# Color insignificant p-values red
+model_summaries <- model_summaries %>%
+  mutate(`P-Value` = ifelse(p.value > 0.05, cell_spec(p.value, color = "red"), p.value)) %>%
+  select(Model, Term = term, Estimate = estimate, `Standard Error` = std.error, `t-Value` = statistic, `P-Value`, `R-Squared`)
+
+# Create and format the table
+model_summaries %>%
+  kable("html", escape = FALSE, caption = "Model Summaries for Various Relationships") %>%
+  kable_styling(full_width = FALSE, position = "left", bootstrap_options = c("striped", "hover", "condensed", "responsive")) %>%
+  row_spec(0, bold = TRUE, background = "#4CAF50", color = "white") %>%
+  row_spec(seq(1, nrow(model_summaries), by = 2), background = "#f2f2f2") %>%
+  row_spec(seq(2, nrow(model_summaries), by = 2), background = "#e0e0e0") %>%
+  column_spec(1:7, border_left = TRUE, border_right = TRUE) %>%
+  add_header_above(c(" " = 1, "Model Summary" = 6))
+
+```
+
+```{r}
+# Repeat for San Francisco data
+# Calculate cumulative bike lane additions and total injuries and deaths
+selected_data_sf <- selected_data_sf %>%
+  mutate(cumulative_bike_lane = cumsum(bike_lane_addition),
+          total_injuries_deaths = accidents_count + 5*total_killed)
+
+# Plot traffic volume against total injuries and deaths
+ggplot(selected_data_sf, aes(x = mv_traffic, y = total_injuries_deaths)) +
+  geom_point() +
+  labs(title = "SF: Motor Vehicle Traffic Volume vs. Total Injuries and Deaths", x = "Motor Vehicle Traffic Volume", y = "Total Injuries and Deaths") +
+  theme_minimal()
+```  
+
+```{r}
+# Model logarithmic relationship between bike lane additions and bike to traffic ratio, linear relationship between bike to traffic ratio and total injuries and deaths, linear relationship between motor vehicle traffic volume and total injuries and deaths
+
+log_lane_bike_ratio_sf <- lm(cumulative_bike_lane ~ log(trend_sf + 1), data = selected_data_sf)
+linear_bike_ratio_injuries_sf <- lm(total_injuries_deaths ~ trend_sf, data = selected_data_sf)
+linear_traffic_injuries_sf <- lm(total_injuries_deaths ~ mv_traffic, data = selected_data_sf)
+
+# Print the summary of the models
+summary(log_lane_bike_ratio_sf)
+summary(linear_bike_ratio_injuries_sf)
+summary(linear_traffic_injuries_sf)
+```
+
+# 4 NEXT STEPS
+The preliminary regression models provided valuable insights but were not 
+conclusive, indicating that further, more robust analyses are necessary. They
+reveal a statistically significant relationship but not exactly what it is, it isn’t linear 
+or strictly logarithmic either. Additionally, while being statistically significant, the 
+effect size of bike lane additions on accidents is relatively small, making it harder 
+to model as well. However, the models serve as a great exploratory analysis into 
+what the next steps of the research should be.
+4.1 Decision Trees: Uncovering Nonlinear Interactions and Thresholds
+Incorporating Decision Trees emerged as a logical next step. This method excels in 
+capturing non-linear patterns and identifying thresholds where the relationship 
+between bike lanes and injury rates shifts. Decision Trees do not assume 
+proportionality in outcomes with each added mile of bike lane but instead reveal 
+critical junctures, such as when lane density effectively separates cyclists from 
+vehicle traffic, leading to significant changes in safety outcomes.
+Decision Trees also automatically detect interactions between variables without 
+needing explicit specification. For example, they could reveal how the 
+effectiveness of bike lanes varies in high-traffic versus low-traffic areas or across 
+different seasons—both relevant factors given the complex data interactions. 
+Given that the decision-makers involved in bike lane installation are often 
+government workers who require a clear and valid basis for their decisions, the 
+interpretability of Decision Trees is especially valuable. Their branching structure 
+provides intuitive insights into the conditions where bike lanes most effectively 
+reduce injury rates, aiding stakeholders in setting context-specific thresholds for 
+bike lane expansions. Ensemble methods like Random Forests may also be 
+explored to enhance these findings, improving reliability by combining multiple 
+trees to capture subtle trends across cities and time periods.
+
+```{r}
+# Select relevant columns for the modeling
+#cols_to_select <- c('predicted_logistic', 'cumulative_bike_lane', 'mv_traffic', 'total_injuries_deaths')
+cols_to_select <- c('predicted_log', 'cumulative_bike_lane', 'mv_traffic', 'total_injuries_deaths')
+
+
+selected_data_nyc <- selected_data_nyc |>
+    select(all_of(cols_to_select))
+```
+
+# Decision Tree Model for NYC Data
+
+```{r}
+# Install and load required packages
+library(caret)
+library(rpart)
+library(rpart.plot)
+
+# Set random seed for reproducibility
+set.seed(1125)
+
+# Define the formula and dataset
+#formula <- total_injuries_deaths ~ predicted_logistic + cumulative_bike_lane + mv_traffic
+formula <- total_injuries_deaths ~ predicted_log + cumulative_bike_lane + mv_traffic
+data <- selected_data_nyc
+
+# Split the data into training and testing sets (if not already done)
+train_index <- createDataPartition(data$total_injuries_deaths, p = 0.8, list = FALSE)
+train_data <- data[train_index, ]
+test_data <- data[-train_index, ]
+
+# Define the grid for cp (complexity parameter) values to tune
+cp_values <- seq(0.0001, 0.05, by = 0.005)  # Adjust the cp range to avoid overly complex trees
+
+# Define the control for the inner loop (for hyperparameter tuning)
+inner_control <- trainControl(
+  method = "cv",                  # Cross-validation for inner loop
+  number = 5,                     # 5-fold cross-validation for hyperparameter tuning
+  search = "grid"                 # Use grid search for hyperparameter tuning
+)
+
+# Define the control for the outer loop (for performance evaluation)
+outer_control <- trainControl(
+  method = "cv",                  # Cross-validation for outer loop
+  number = 5,                     # 5-fold cross-validation for model evaluation
+  savePredictions = "final",      # Save the final predictions
+  index = createFolds(train_data$total_injuries_deaths, k = 5)  # Outer cross-validation splits
+)
+
+# Define the hyperparameter grid for cp only
+tune_grid <- expand.grid(cp = cp_values)
+
+# List to store results for each maxdepth value
+results <- list()
+
+# Loop through different maxdepth values (from 1 to 10, or adjust as needed)
+maxdepth_values <- 1:10
+
+for (depth in maxdepth_values) {
+  
+  # Nested cross-validation using the caret package
+  nested_model <- train(
+    formula,                         # Formula
+    data = train_data,                # Dataset
+    method = "rpart",                 # Decision tree model
+    trControl = inner_control,        # Use inner cross-validation control for hyperparameter tuning
+    tuneGrid = tune_grid,             # Hyperparameter grid for cp
+    metric = "RMSE",                  # Evaluation metric
+    control = rpart.control(maxdepth = depth)  # Vary maxdepth
+  )
+  
+  # Store results for each depth (best cp and RMSE)
+  results[[depth]] <- list(best_cp = nested_model$bestTune$cp, RMSE = min(nested_model$results$RMSE))
+}
+
+# Convert results to a data frame for easy comparison
+results_df <- data.frame(
+  maxdepth = maxdepth_values,
+  best_cp = sapply(results, function(x) x$best_cp),
+  RMSE = sapply(results, function(x) x$RMSE)
+)
+
+# Print the results for different maxdepth values
+print(results_df)
+```
+
+```{r}
+# Based on the above output, use maxdepth of 4 and cp of 0.0301
+# Train the final model with the best cp and maxdepth
+dt_model_ny <- rpart(
+  formula,
+  data = train_data,
+  control = rpart.control(
+    cp = 0.0301,  # Best cp
+    maxdepth = 4   # Best maxdepth
+  )
+)
+
+# Plot the final decision tree
+rpart.plot(dt_model_ny)
+
+# Print the final model
+dt_model_ny
+
+# Make predictions on the test set
+predictions <- predict(dt_model_ny, newdata = test_data)
+
+# Calculate RMSE on the test set
+dt_rmse <- sqrt(mean((predictions - test_data$total_injuries_deaths)^2))
+
+# Calculate MAE on the test set
+dt_mae <- mean(abs(predictions - test_data$total_injuries_deaths))
+
+# Calculate MAPE on the test set
+dt_mape <- mean(abs(predictions - test_data$total_injuries_deaths) / test_data$total_injuries_deaths)
+
+# Calculate R-squared on the test set
+dt_r_squared <- 1 - sum((test_data$total_injuries_deaths - predictions)^2) / sum((test_data$total_injuries_deaths - mean(test_data$total_injuries_deaths))^2)
+```
+
+```{r}
+# Print the actual tree structure
+printcp(dt_model_ny)
+```
+
+```{r}
+# Calculate the baseline RMSE, MAE, MAPE, and R-squared
+baseline_rmse <- sd(test_data$total_injuries_deaths)
+baseline_mae <- mean(abs(test_data$total_injuries_deaths - mean(test_data$total_injuries_deaths)))
+baseline_mape <- mean(abs(test_data$total_injuries_deaths - mean(test_data$total_injuries_deaths)) / test_data$total_injuries_deaths)
+baseline_r_squared <- 1 - sum((test_data$total_injuries_deaths - mean(test_data$total_injuries_deaths))^2) / sum((test_data$total_injuries_deaths - mean(test_data$total_injuries_deaths))^2)
+
+# Create a data frame to store the evaluation metrics
+evaluation_metrics <- data.frame(
+  Metric = c("RMSE", "MAE", "MAPE", "R-squared"),
+  Baseline = c(baseline_rmse, baseline_mae, baseline_mape, baseline_r_squared),
+  DecisionTree = c(dt_rmse, dt_mae, dt_mape, dt_r_squared)
+)
+
+# Print the evaluation metrics
+print(evaluation_metrics)
+```
+
+# Random Forest Model for NYC Data
+
+```{r}
+# Define the formula and dataset
+#formula <- total_injuries_deaths ~ predicted_logistic + cumulative_bike_lane + mv_traffic
+formula <- total_injuries_deaths ~ predicted_log + cumulative_bike_lane + mv_traffic
+data <- selected_data_nyc
+
+set.seed(1125)
+
+# Define the grid for mtry (number of variables randomly sampled at each split)
+mtry_values <- seq(1, 3, by = 1)  # Adjust the mtry range as needed
+
+# Define the control for the inner loop (for hyperparameter tuning)
+inner_control <- trainControl(
+  method = "cv",                  # Cross-validation for inner loop
+  number = 5,                     # 3-fold cross-validation for hyperparameter tuning
+  search = "grid"                 # Use grid search for hyperparameter tuning
+)
+
+# Define the control for the outer loop (for performance evaluation)
+outer_control <- trainControl(
+  method = "cv",                  # Cross-validation for outer loop
+  number = 5,                     # 3-fold cross-validation for model evaluation
+  savePredictions = "final",      # Save the final predictions
+  index = createFolds(data$total_injuries_deaths, k = 5)  # Outer cross-validation splits
+)
+
+# Define the hyperparameter grid for mtry only
+tune_grid <- expand.grid(mtry = mtry_values)
+
+# Initialize list to store results for each ntree value
+results <- list()
+
+# Loop through different ntree values (from 2 to 20)
+ntree_values <- seq(2, 100, by = 5)
+
+for (i in seq_along(ntree_values)) {
+  ntree <- ntree_values[i]
+  
+  # Nested cross-validation using the caret package
+  nested_model <- train(
+    formula,                         # Formula
+    data = data,                     # Dataset
+    method = "rf",                   # Random forest model
+    trControl = inner_control,       # Use inner cross-validation control for hyperparameter tuning
+    tuneGrid = tune_grid,            # Hyperparameter grid for mtry
+    metric = "RMSE",                 # Evaluation metric
+    ntree = ntree                    # Vary ntree
+  )
+  
+  # Store results for each ntree (best mtry and RMSE)
+  results[[i]] <- list(ntree = ntree, best_mtry = nested_model$bestTune$mtry, RMSE = min(nested_model$results$RMSE))
+}
+
+str(results)
+```
+
+```{r}
+# Convert results to a data frame for easy comparison
+results_df <- data.frame(
+  ntree = ntree_values,
+  best_mtry = sapply(results, function(x) x$best_mtry),
+  RMSE = sapply(results, function(x) x$RMSE)
+)
+
+# Print the results for different ntree values
+print(results_df)
+```
+
+```{r}
+# Based on the above output, use ntree of 37 and mtry of 1 (While ntree of 72 and mtry of 1 have a marginally lower RMSE, the difference is minimal and the model with ntree of 22 and mtry of 2 is simpler and less prone to overfitting, a key concern in a dataset of this small size)
+
+set.seed(1125)
+# Train the final random forest model with the best ntree and mtry
+rf_model_ny <- randomForest(
+  formula,
+  data = train_data,
+  ntree = 37,  # Best ntree
+  mtry = 1     # Best mtry
+)
+
+# Make predictions on the test set
+rf_predictions <- predict(rf_model_ny, newdata = test_data)
+
+# Calculate RMSE on the test set
+rf_rmse <- sqrt(mean((rf_predictions - test_data$total_injuries_deaths)^2))
+
+# Calculate MAE on the test set
+rf_mae <- mean(abs(rf_predictions - test_data$total_injuries_deaths))
+
+# Calculate MAPE on the test set
+rf_mape <- mean(abs(rf_predictions - test_data$total_injuries_deaths) / test_data$total_injuries_deaths)
+
+# Calculate R-squared on the test set
+rf_r_squared <- 1 - sum((test_data$total_injuries_deaths - rf_predictions)^2) / sum((test_data$total_injuries_deaths - mean(test_data$total_injuries_deaths))^2)
+
+# Add the model evaluation metrics to the evaluation_metrics data frame
+evaluation_metrics$RandomForest <- c(rf_rmse, rf_mae, rf_mape, rf_r_squared)
+
+# Print the updated evaluation metrics
+print(evaluation_metrics)
+```
+
+```{r}
+# Print the actual random forest model
+rf_model_ny
+
+# Print the variable importance (not plot)
+rf_model_ny$importance
+```
+
+
+# SVM Model for NYC Data
+
+```{r}
+# Scale the selected_data_nyc dataset for SVM
+scaled_data <- scale(selected_data_nyc)
+
+# Convert the scaled data to a data frame
+scaled_data <- as.data.frame(scaled_data)
+
+# Split the scaled data into training and testing sets
+set.seed(1125)
+train_indices <- createDataPartition(selected_data_nyc$total_injuries_deaths, p = 0.8, list = FALSE)
+train_data_scaled <- scaled_data[train_indices, ]
+test_data_scaled <- scaled_data[-train_indices, ]
+```
+
+```{r}
+set.seed(1125)
+# Define the control for the inner loop (hyperparameter tuning)
+inner_control <- trainControl(
+  method = "cv",                  # Cross-validation for inner loop
+  number = 5,                     # 5-fold cross-validation for hyperparameter tuning
+  search = "grid"                 # Use grid search for hyperparameter tuning
+)
+
+# Define the control for the outer loop (performance evaluation)
+outer_control <- trainControl(
+  method = "cv",                  # Cross-validation for outer loop
+  number = 5,                     # 5-fold cross-validation for model evaluation
+  savePredictions = "final",      # Save the final predictions
+  index = createFolds(data$total_injuries_deaths, k = 5)  # Outer cross-validation splits
+)
+
+# Define the hyperparameter grids for each kernel
+tune_grids <- list(
+  rbf = expand.grid(.sigma = seq(0.01, 1, by = 0.01), .C = seq(0.1, 10, by = 0.1)),
+  poly = expand.grid(.degree = seq(1, 10, by = 1), .scale = seq(0.001, 1, by = 0.001), .C = seq(0.1, 10, by = 0.1)),
+  sigmoid = expand.grid(.C = c(0.1, 1, 10, 100), .scale = c(0.001, 0.01, 0.1, 1))
+)
+
+# Loop over the kernels
+kernels <- c("svmRadial", "svmPoly")
+results <- list()
+
+for (kernel in kernels) {
+  message("Training SVM with kernel: ", kernel)
+  
+  # Get the appropriate tuning grid
+  if (kernel == "svmRadial") {
+    tune_grid <- tune_grids$rbf
+  } else if (kernel == "svmPoly") {
+    tune_grid <- tune_grids$poly
+  } else if (kernel == "svmSigmoid") {
+    tune_grid <- tune_grids$sigmoid
+  }
+  
+  # Train the model using cross-validation
+  model <- train(
+    formula,                      # Formula
+    data = data,                  # Dataset
+    method = kernel,              # Kernel-specific method
+    trControl = outer_control,    # Outer cross-validation control
+    tuneGrid = tune_grid,         # Kernel-specific hyperparameter grid
+    metric = "RMSE"               # Evaluation metric
+  )
+  
+  # Store results
+  results[[kernel]] <- model
+}
+
+# Summarize results for each kernel
+for (kernel in kernels) {
+  message("\nSummary for kernel: ", kernel)
+  print(results[[kernel]])
+}
+
+# Function to extract and print the lowest 50 RMSE values
+print_top_50_rmse <- function(results) {
+  for (kernel in names(results)) {
+    message("\nTop 50 results for kernel: ", kernel)
+    
+    # Extract the results
+    res <- results[[kernel]]$results
+    
+    # Sort by RMSE and get the top 20
+    top_50 <- res[order(res$RMSE), ][1:50, ]
+    
+    # Print the top 20
+    print(top_50)
+  }
+}
+
+# Assuming 'results' is your list of trained models
+print_top_50_rmse(results)
+```
+
+```{r}
+library(e1071)
+# Use the best hyperparameters found for the SVM model, RBF kernel, sigma of 0.27, and C of 1.3
+# Train the final SVM model with the best hyperparameters
+rbf_svm <- svm(
+  formula,
+  data = train_data_scaled,
+  kernel = "radial",
+  cost = 1.3,
+  gamma = 0.27
+)
+
+# Make predictions on the test set
+svm_predictions <- predict(rbf_svm, newdata = test_data_scaled)
+
+# Calculate RMSE on the test set
+svm_rmse <- sqrt(mean((svm_predictions - test_data_scaled$total_injuries_deaths)^2))
+
+# Calculate MAE on the test set
+svm_mae <- mean(abs(svm_predictions - test_data_scaled$total_injuries_deaths))
+
+# Calculate MAPE on the test set
+svm_mape <- mean(abs(svm_predictions - test_data_scaled$total_injuries_deaths) / test_data_scaled$total_injuries_deaths)
+
+# Calculate R-squared on the test set
+svm_r_squared <- 1 - sum((test_data_scaled$total_injuries_deaths - svm_predictions)^2) / sum((test_data_scaled$total_injuries_deaths - mean(test_data_scaled$total_injuries_deaths))^2)
+
+# Create a data frame to store the evaluation metrics
+scaled_evaluation_metrics <- data.frame(
+  Metric = c("RMSE", "MAE", "MAPE", "R-squared"),
+  SVM_RBF = c(svm_rmse, svm_mae, svm_mape, svm_r_squared)
+)
+
+# Calcualte baseline RMSE, MAE, MAPE, and R-squared for the scaled data
+baseline_rmse_scaled <- sd(test_data_scaled$total_injuries_deaths)
+baseline_mae_scaled <- mean(abs(test_data_scaled$total_injuries_deaths - mean(test_data_scaled$total_injuries_deaths)))
+baseline_mape_scaled <- mean(abs(test_data_scaled$total_injuries_deaths - mean(test_data_scaled$total_injuries_deaths)) / test_data_scaled$total_injuries_deaths)
+baseline_r_squared_scaled <- 1 - sum((test_data_scaled$total_injuries_deaths - mean(test_data_scaled$total_injuries_deaths))^2) / sum((test_data_scaled$total_injuries_deaths - mean(test_data_scaled$total_injuries_deaths))^2)
+
+# Add the baseline metrics to the evaluation data frame
+scaled_evaluation_metrics$Baseline = c(baseline_rmse_scaled, baseline_mae_scaled, baseline_mape_scaled, baseline_r_squared_scaled)
+
+# Print the evaluation metrics
+print(scaled_evaluation_metrics)
+```
+
+```{r}
+# See if a sigmoid kernel performs better
+# Define the grid of hyperparameters
+cost_values <- seq(4, 12, by = 0.5)
+gamma_values <- seq(0.001, 0.01, by = 0.001)
+coef0_values <- c(0.0)
+
+
+# Initialize a data frame to store results
+results <- data.frame(cost = numeric(),
+                      gamma = numeric(),
+                      coef0 = numeric(),
+                      RMSE = numeric())
+
+# Define the formula and dataset
+#formula <- total_injuries_deaths ~ predicted_logistic + cumulative_bike_lane + mv_traffic
+formula <- total_injuries_deaths ~ predicted_log + cumulative_bike_lane + mv_traffic
+data <- scaled_data
+
+# Function to perform cross-validation
+cv_function <- function(cost, gamma, coef0) {
+  # Manually perform 5-fold cross-validation
+  set.seed(1125)
+  folds <- createFolds(data$total_injuries_deaths, k = 5)
+  rmses <- c()
+  
+  for (fold in folds) {
+    train_indices <- setdiff(seq_len(nrow(data)), fold)
+    train_data <- data[train_indices, ]
+    test_data <- data[fold, ]
+    
+    model <- svm(formula = formula,
+                 data = train_data,
+                 kernel = "sigmoid",
+                 cost = cost,
+                 gamma = gamma,
+                 coef0 = coef0)
+    
+    predictions <- predict(model, test_data)
+    rmse <- sqrt(mean((predictions - test_data$total_injuries_deaths)^2))
+    rmses <- c(rmses, rmse)
+  }
+  
+  return(mean(rmses))
+}
+
+# Perform grid search
+for (cost in cost_values) {
+  for (gamma in gamma_values) {
+    for (coef0 in coef0_values) {
+      RMSE <- cv_function(cost, gamma, coef0)
+      results <- rbind(results, data.frame(cost = cost, gamma = gamma, coef0 = coef0, RMSE = RMSE))
+    }
+  }
+}
+
+results
+```
+
+```{r}
+# Based on the above output, use cost of 6, gamma of 0.01, and coef0 of 0.0
+# Train the final SVM model with the best hyperparameters
+final_svm_model <- svm(
+  formula,
+  data = train_data_scaled,
+  kernel = "sigmoid",
+  cost = 6,
+  gamma = 0.01,
+  coef0 = 0.0,
+  type = "eps-regression"
+)
+
+# Make predictions on the test set
+svm_predictions <- predict(final_svm_model, newdata = test_data_scaled)
+
+# Calculate RMSE on the test set
+svm_rmse <- sqrt(mean((svm_predictions - test_data_scaled$total_injuries_deaths)^2))
+
+# Calculate MAE on the test set
+svm_mae <- mean(abs(svm_predictions - test_data_scaled$total_injuries_deaths))
+
+# Calculate MAPE on the test set
+svm_mape <- mean(abs(svm_predictions - test_data_scaled$total_injuries_deaths) / test_data_scaled$total_injuries_deaths)
+
+# Calculate R-squared on the test set
+svm_r_squared <- 1 - sum((test_data_scaled$total_injuries_deaths - svm_predictions)^2) / sum((test_data_scaled$total_injuries_deaths - mean(test_data_scaled$total_injuries_deaths))^2)
+
+# Add the model evaluation metrics to the scaled_evaluation_metrics data frame
+scaled_evaluation_metrics$SVR_Sigmoid <- c(svm_rmse, svm_mae, svm_mape, svm_r_squared)
+
+# Print the updated evaluation metrics
+print(scaled_evaluation_metrics)
+```
+
+```{r}
+# Rebuild the decision tree and random forest models on the scaled data using the same hyperparameters found before and add them tp the scaled_evaluation_metrics data frame
+# Decision Tree Model
+# Train the final decision tree model with the best cp and maxdepth
+final_dt_model <- rpart(
+  formula,
+  data = train_data_scaled,
+  control = rpart.control(
+    cp = 0.0301,  # Best cp
+    maxdepth = 4   # Best maxdepth
+  )
+)
+
+# Train the final random forest model with the best ntree and mtry
+final_rf_model <- randomForest(
+  formula,
+  data = train_data_scaled,
+  ntree = 37,  # Best ntree
+  mtry = 1     # Best mtry
+)
+
+# Make predictions on the test set
+dt_predictions <- predict(final_dt_model, newdata = test_data_scaled)
+rf_predictions <- predict(final_rf_model, newdata = test_data_scaled)
+
+# Calculate RMSE on the test set
+dt_rmse <- sqrt(mean((dt_predictions - test_data_scaled$total_injuries_deaths)^2))
+rf_rmse <- sqrt(mean((rf_predictions - test_data_scaled$total_injuries_deaths)^2))
+
+# Calculate MAE on the test set
+dt_mae <- mean(abs(dt_predictions - test_data_scaled$total_injuries_deaths))
+rf_mae <- mean(abs(rf_predictions - test_data_scaled$total_injuries_deaths))
+
+# Calculate MAPE on the test set
+dt_mape <- mean(abs(dt_predictions - test_data_scaled$total_injuries_deaths) / test_data_scaled$total_injuries_deaths)
+rf_mape <- mean(abs(rf_predictions - test_data_scaled$total_injuries_deaths) / test_data_scaled$total_injuries_deaths)
+
+# Calculate R-squared on the test set
+dt_r_squared <- 1 - sum((test_data_scaled$total_injuries_deaths - dt_predictions)^2) / sum((test_data_scaled$total_injuries_deaths - mean(test_data_scaled$total_injuries_deaths))^2)
+rf_r_squared <- 1 - sum((test_data_scaled$total_injuries_deaths - rf_predictions)^2) / sum((test_data_scaled$total_injuries_deaths - mean(test_data_scaled$total_injuries_deaths))^2)
+
+# Add the model evaluation metrics to the scaled_evaluation_metrics data frame
+scaled_evaluation_metrics$DecisionTree <- c(dt_rmse, dt_mae, dt_mape, dt_r_squared)
+scaled_evaluation_metrics$RandomForest <- c(rf_rmse, rf_mae, rf_mape, rf_r_squared)
+
+# Print the updated evaluation metrics
+print(scaled_evaluation_metrics)
+```
+
+
+# XGBoost Model for NYC Data
+
+```{r}
+# Load necessary library
+library(xgboost)
+
+#formula <- total_injuries_deaths ~ predicted_logistic + cumulative_bike_lane + mv_traffic
+formula <- total_injuries_deaths ~ predicted_log + cumulative_bike_lane + mv_traffic
+data <- train_data_scaled
+
+# Convert the data to a matrix
+train_matrix <- as.matrix(data[, -which(names(data) == "total_injuries_deaths")])
+
+# Define the XGBoost parameters
+params <- list(
+  objective = "reg:squarederror",  # Regression task
+  eval_metric = "rmse"              # Evaluation metric
+)
+
+# Train the XGBoost model
+xgb_model_ny <- xgboost(data = train_matrix, label = data$total_injuries_deaths, nrounds = 100, params = params)
+
+# Make predictions on the test set
+test_matrix <- as.matrix(test_data_scaled[, -which(names(test_data_scaled) == "total_injuries_deaths")])
+xgb_predictions <- predict(xgb_model_ny, test_matrix)
+
+# Calculate RMSE on the test set
+xgb_rmse <- sqrt(mean((xgb_predictions - test_data_scaled$total_injuries_deaths)^2))
+
+# Calculate MAE on the test set
+xgb_mae <- mean(abs(xgb_predictions - test_data_scaled$total_injuries_deaths))
+
+# Calculate MAPE on the test set
+xgb_mape <- mean(abs(xgb_predictions - test_data_scaled$total_injuries_deaths) / test_data_scaled$total_injuries_deaths)
+
+# Calculate R-squared on the test set
+xgb_r_squared <- 1 - sum((test_data_scaled$total_injuries_deaths - xgb_predictions)^2) / sum((test_data_scaled$total_injuries_deaths - mean(test_data_scaled$total_injuries_deaths))^2)
+
+# Add the model evaluation metrics to the scaled_evaluation_metrics data frame
+scaled_evaluation_metrics$XGBoost <- c(xgb_rmse, xgb_mae, xgb_mape, xgb_r_squared)
+
+# Print the updated evaluation metrics
+print(scaled_evaluation_metrics)
+```
+
+```{r}
+# Print the actual XGBoost model
+print(xgb_model_ny)
+
+# Print the variable importance
+xgb_importance_ny <- xgb.importance(model = xgb_model_ny)
+xgb_importance_ny
+```
+
+```{r}
+# Save the scaled nyc evaluation metrics
+nyc_scaled_evaluation_metrics <- scaled_evaluation_metrics
+```
+
+```{r}
+# Rebuild the XGBoost model on the unscaled data and add it to the evaluation metrics
+data <- as.data.frame(train_data)
+test_data <- as.data.frame(test_data)
+
+# Convert the data to a matrix
+train_matrix <- as.matrix(data[, -which(names(data) == "total_injuries_deaths")])
+
+# Define the XGBoost parameters
+params <- list(
+  objective = "reg:squarederror",  # Regression task
+  eval_metric = "rmse"              # Evaluation metric
+)
+
+# Train the XGBoost model
+xgb_model_ny <- xgboost(data = train_matrix, label = data$total_injuries_deaths, nrounds = 100, params = params)
+
+# Make predictions on the test set
+test_matrix <- as.matrix(test_data[, -which(names(test_data) == "total_injuries_deaths")])
+xgb_predictions <- predict(xgb_model_ny, test_matrix)
+
+# Calculate RMSE on the test set
+xgb_rmse <- sqrt(mean((xgb_predictions - test_data$total_injuries_deaths)^2))
+
+# Calculate MAE on the test set
+xgb_mae <- mean(abs(xgb_predictions - test_data$total_injuries_deaths))
+
+# Calculate MAPE on the test set
+xgb_mape <- mean(abs(xgb_predictions - test_data$total_injuries_deaths) / test_data$total_injuries_deaths)
+
+# Calculate R-squared on the test set
+xgb_r_squared <- 1 - sum((test_data$total_injuries_deaths - xgb_predictions)^2) / sum((test_data$total_injuries_deaths - mean(test_data$total_injuries_deaths))^2)
+
+# Add the model evaluation metrics to the scaled_evaluation_metrics data frame
+evaluation_metrics$XGBoost <- c(xgb_rmse, xgb_mae, xgb_mape, xgb_r_squared)
+
+# Print the updated evaluation metrics
+print(evaluation_metrics)
+```
+
+```{r}
+# Save the unscaled nyc evaluation metrics
+nyc_evaluation_metrics <- evaluation_metrics
+```
+
+
+---
+
+```{r}
+# Create the predicted logarithmic column for the San Francisco data
+model_logarithmic <- lm(cumulative_bike_lane ~ log(trend_sf + 1), data = selected_data_sf)
+
+# Predict the logistic function for the San Francisco data
+selected_data_sf$predicted_log <- predict(model_logarithmic, newdata = selected_data_sf)
+```
+
+```{r}
+#columns_to_select <- c("predicted_logistic", "cumulative_bike_lane", "mv_traffic", "total_injuries_deaths")
+columns_to_select <- c("predicted_log", "cumulative_bike_lane", "mv_traffic", "total_injuries_deaths")
+# Add the sf trend to the selected dataset
+selected_data_sf <- selected_data_sf |>
+  select(all_of(columns_to_select))
+```
+```{r}
+# Use the sf data to test the xgboost model
+# Scale the selected_data_sf dataset
+scaled_sf <- scale(selected_data_sf)
+
+# Convert the scaled data to a data frame
+scaled_sf <- as.data.frame(scaled_sf)
+
+# Prepare the test set (selected_data_sf) by removing the target column
+test_matrix_sf <- as.matrix(scaled_sf[, -which(names(scaled_sf) == "total_injuries_deaths")])
+
+# Extract the actual values for the target variable (for evaluation purposes)
+test_labels_sf <- scaled_sf$total_injuries_deaths
+
+# Make predictions using the trained XGBoost model
+xgb_predictions_sf <- predict(xgb_model_ny, test_matrix_sf)
+
+# RMSE
+rmse_sf <- sqrt(mean((xgb_predictions_sf - test_labels_sf)^2))
+
+# MAE
+mae_sf <- mean(abs(xgb_predictions_sf - test_labels_sf))
+
+# MAPE (Mean Absolute Percentage Error)
+mape_sf <- mean(abs(xgb_predictions_sf - test_labels_sf) / test_labels_sf)
+
+# R-squared
+r_squared_sf <- 1 - sum((test_labels_sf - xgb_predictions_sf)^2) / sum((test_labels_sf - mean(test_labels_sf))^2)
+
+# Calculate the baseline metrics
+baseline_rmse_sf <- sd(test_labels_sf)
+baseline_mae_sf <- mean(abs(test_labels_sf - mean(test_labels_sf)))
+baseline_mape_sf <- mean(abs(test_labels_sf - mean(test_labels_sf)) / test_labels_sf)
+baseline_r_squared_sf <- 0  # Baseline model has an R-squared of 0 by definition
+
+# Evaluation metrics for XGBoost on the test set
+xgb_evaluation_sf <- data.frame(
+  Metric = c("RMSE", "MAE", "MAPE", "R-squared"),
+  XGBoost = c(rmse_sf, mae_sf, mape_sf, r_squared_sf),
+  Baseline = c(baseline_rmse_sf, baseline_mae_sf, baseline_mape_sf, baseline_r_squared_sf)
+)
+
+# Print the comparison table
+print(xgb_evaluation_sf)
+```
+
+```{r}
+# Evaluate the other decision tree and random forest models on the scaled sf data
+# Decision Tree Model
+# Make predictions on the test set
+dt_predictions_sf <- predict(final_dt_model, newdata = scaled_sf)
+rf_predictions_sf <- predict(final_rf_model, newdata = scaled_sf)
+
+# Calculate RMSE on the test set
+dt_rmse_sf <- sqrt(mean((dt_predictions_sf - test_labels_sf)^2))
+rf_rmse_sf <- sqrt(mean((rf_predictions_sf - test_labels_sf)^2))
+
+# Calculate MAE on the test set
+dt_mae_sf <- mean(abs(dt_predictions_sf - test_labels_sf))
+rf_mae_sf <- mean(abs(rf_predictions_sf - test_labels_sf))
+
+# Calculate MAPE on the test set
+dt_mape_sf <- mean(abs(dt_predictions_sf - test_labels_sf) / test_labels_sf)
+rf_mape_sf <- mean(abs(rf_predictions_sf - test_labels_sf) / test_labels_sf)
+
+# Calculate R-squared on the test set
+dt_r_squared_sf <- 1 - sum((test_labels_sf - dt_predictions_sf)^2) / sum((test_labels_sf - mean(test_labels_sf))^2)
+rf_r_squared_sf <- 1 - sum((test_labels_sf - rf_predictions_sf)^2) / sum((test_labels_sf - mean(test_labels_sf))^2)
+
+# Add the model evaluation metrics to the model_evaluation_metrics data frame along with the above xgboost and baseline metrics
+model_evaluation_metrics_sf <- data.frame(
+  Metric = c("RMSE", "MAE", "MAPE", "R-squared"),
+  XGBoost = c(rmse_sf, mae_sf, mape_sf, r_squared_sf),
+  DecisionTree = c(dt_rmse_sf, dt_mae_sf, dt_mape_sf, dt_r_squared_sf),
+  RandomForest = c(rf_rmse_sf, rf_mae_sf, rf_mape_sf, rf_r_squared_sf),
+  Baseline = c(baseline_rmse_sf, baseline_mae_sf, baseline_mape_sf, baseline_r_squared_sf)
+)
+
+# Print the updated evaluation metrics
+print(model_evaluation_metrics_sf)
+```
+
+---
+
+```{r}
+# Create the predicted logarithmic column for the San Francisco data
+model_logarithmic <- lm(cumulative_bike_lane ~ log(trend_sf + 1), data = selected_data_sf)
+
+# Predict the logistic function for the San Francisco data
+selected_data_sf$predicted_log <- predict(model_logarithmic, newdata = selected_data_sf)
+```
+
+```{r}
+#columns_to_select <- c("predicted_logistic", "cumulative_bike_lane", "mv_traffic", "total_injuries_deaths")
+columns_to_select <- c("predicted_log", "cumulative_bike_lane", "mv_traffic", "total_injuries_deaths")
+# Add the sf trend to the selected dataset
+selected_data_sf <- selected_data_sf |>
+  select(all_of(columns_to_select))
+```
+
+# Rebuild the decision tree, random forest, and xgboost models on the sf data using the same grid searches to find the best hyperparameters for each
+
+```{r}
+# Split the selected_data_sf dataset into training and testing sett
+set.seed(1125)
+train_indices_sf <- createDataPartition(selected_data_sf$total_injuries_deaths, p = 0.8, list = FALSE)
+train_data_sf <- selected_data_sf[train_indices_sf, ]
+test_data_sf <- selected_data_sf[-train_indices_sf, ]
+```
+
+```{r}
+# Decision Tree Model
+# Define the formula and dataset
+#formula <- total_injuries_deaths ~ predicted_logistic + cumulative_bike_lane + mv_traffic
+formula <- total_injuries_deaths ~ predicted_log + cumulative_bike_lane + mv_traffic
+data <- train_data_sf
+
+set.seed(1125)
+
+# Define the grid for cp (complexity parameter) values to tune
+cp_values <- seq(0.01, 1.1, by = 0.01)
+
+# Define the control for the inner loop (for hyperparameter tuning)
+inner_control <- trainControl(
+  method = "cv",                  # Cross-validation for inner loop
+  number = 5,                     # 5-fold cross-validation for hyperparameter tuning
+  search = "grid"                 # Use grid search for hyperparameter tuning
+)
+
+# Define the control for the outer loop (for performance evaluation)
+outer_control <- trainControl(
+  method = "cv",                  # Cross-validation for outer loop
+  number = 5,                     # 5-fold cross-validation for model evaluation
+  savePredictions = "final",      # Save the final predictions
+  index = createFolds(data$total_injuries_deaths, k = 5)  # Outer cross-validation splits
+)
+
+# Define the hyperparameter grid for cp only
+tune_grid <- expand.grid(cp = cp_values)
+
+# Initialize list to store results for each cp value
+results <- list()
+
+# Loop through different cp values
+for (cp in cp_values) {
+
+  # Nested cross-validation using the caret package
+  nested_model <- train(
+    formula,                         # Formula
+    data = data,                     # Dataset
+    method = "rpart",                # Decision tree model
+    trControl = inner_control,       # Use inner cross-validation control for tuning
+    tuneGrid = data.frame(cp = cp),  # Hyperparameter grid for cp (single value)
+    metric = "RMSE",                 # Evaluation metric
+    control = rpart.control(cp = cp) # Vary cp
+  )
+
+  # Verify and store results for each cp
+  if (!is.null(nested_model$bestTune) && nrow(nested_model$results) > 0) {
+    best_cp <- nested_model$bestTune$cp
+    min_rmse <- min(nested_model$results$RMSE)
+    results[[as.character(cp)]] <- list(best_cp = best_cp, RMSE = min_rmse)
+  }
+}
+
+# Convert results to a data frame for easy comparison
+results_df <- data.frame(
+  cp = cp_values,
+  best_cp = sapply(results, function(x) x$best_cp),
+  RMSE = sapply(results, function(x) x$RMSE)
+)
+
+# Print the results for different cp values
+print(results_df)
+```
+
+```{r}
+# Based on the above output, use cp of 0.09
+# Train the final decision tree model with the best cp
+final_dt_model_sf <- rpart(
+  formula,
+  data = train_data_sf,
+  control = rpart.control(
+    cp = 0.09  # Best cp  
+  )
+)
+
+# Make predictions on the test set
+dt_predictions_sf <- predict(final_dt_model_sf, newdata = test_data_sf)
+
+# Calculate RMSE, MAE, MAPE, and R-squared on the test set
+dt_rmse_sf <- sqrt(mean((dt_predictions_sf - test_data_sf$total_injuries_deaths)^2))
+dt_mae_sf <- mean(abs(dt_predictions_sf - test_data_sf$total_injuries_deaths))
+dt_mape_sf <- mean(abs(dt_predictions_sf - test_data_sf$total_injuries_deaths) / test_data_sf$total_injuries_deaths)
+dt_r_squared_sf <- 1 - sum((test_data_sf$total_injuries_deaths - dt_predictions_sf)^2) / sum((test_data_sf$total_injuries_deaths - mean(test_data_sf$total_injuries_deaths))^2)
+
+# Calculate baseline RMSE, MAE, MAPE, and R-squared for the test set
+baseline_rmse_sf <- sd(test_data_sf$total_injuries_deaths)
+baseline_mae_sf <- mean(abs(test_data_sf$total_injuries_deaths - mean(test_data_sf$total_injuries_deaths)))
+baseline_mape_sf <- mean(abs(test_data_sf$total_injuries_deaths - mean(test_data_sf$total_injuries_deaths)) / test_data_sf$total_injuries_deaths)
+baseline_r_squared_sf <- 1 - sum((test_data_sf$total_injuries_deaths - mean(test_data_sf$total_injuries_deaths))^2) / sum((test_data_sf$total_injuries_deaths - mean(test_data_sf$total_injuries_deaths))^2)
+
+# Create a data frame to store the evaluation metrics
+evaluation_metrics_sf <- data.frame(
+  Metric = c("RMSE", "MAE", "MAPE", "R-squared"),
+  Baseline = c(baseline_rmse_sf, baseline_mae_sf, baseline_mape_sf, baseline_r_squared_sf),
+  DecisionTree = c(dt_rmse_sf, dt_mae_sf, dt_mape_sf, dt_r_squared_sf)
+)
+
+# Print the evaluation metrics
+print(evaluation_metrics_sf)
+```
+
+```{r}
+# Plot the decision tree model
+rpart.plot(final_dt_model_sf, extra = 101, under = TRUE, cex = 0.8, faclen = 0)
+```
+
+```{r}
+# Random Forest Model
+# Define the formula and dataset
+#formula <- total_injuries_deaths ~ predicted_logistic + cumulative_bike_lane + mv_traffic
+formula <- total_injuries_deaths ~ predicted_log + cumulative_bike_lane + mv_traffic
+data <- train_data_sf
+
+set.seed(1125)
+
+# Define the grid for mtry (number of variables randomly sampled at each split)
+mtry_values <- seq(1, 3, by = 1)  # Adjust the mtry range as needed
+
+# Define the control for the inner loop (for hyperparameter tuning)
+inner_control <- trainControl(
+  method = "cv",                  # Cross-validation for inner loop
+  number = 5,                     # 5-fold cross-validation for hyperparameter tuning
+  search = "grid"                 # Use grid search for hyperparameter tuning
+)
+
+# Define the control for the outer loop (for performance evaluation)
+outer_control <- trainControl(
+  method = "cv",                  # Cross-validation for outer loop
+  number = 5,                     # 5-fold cross-validation for model evaluation
+  savePredictions = "final",      # Save the final predictions
+  index = createFolds(data$total_injuries_deaths, k = 5)  # Outer cross-validation splits
+)
+
+# Define the hyperparameter grid for mtry only
+tune_grid <- expand.grid(mtry = mtry_values)
+
+# Initialize list to store results for each ntree value
+results <- list()
+
+# Loop through different ntree values (from 2 to 20)
+ntree_values <- seq(2, 20, by = 2)
+
+for (i in seq_along(ntree_values)) {
+  ntree <- ntree_values[i]
+  
+  # Nested cross-validation using the caret package
+  nested_model <- train(
+    formula,                         # Formula
+    data = data,                     # Dataset
+    method = "rf",                   # Random forest model
+    trControl = inner_control,       # Use inner cross-validation control for hyperparameter tuning
+    tuneGrid = tune_grid,            # Hyperparameter grid for mtry
+    metric = "RMSE",                 # Evaluation metric
+    ntree = ntree                    # Vary ntree
+  )
+  
+  # Store results for each ntree (best mtry and RMSE)
+  results[[i]] <- list(ntree = ntree, best_mtry = nested_model$bestTune$mtry, RMSE = min(nested_model$results$RMSE))
+}
+
+# Convert results to a data frame for easy comparison
+results_df <- data.frame(
+  ntree = ntree_values,
+  best_mtry = sapply(results, function(x) x$best_mtry),
+  RMSE = sapply(results, function(x) x$RMSE)
+)
+
+# Print the results for different ntree values
+print(results_df)
+```
+
+```{r}
+library(randomForest)
+# Based on the above output, use ntree of 18 and mtry of 2
+# Train the final random forest model with the best ntree and mtry
+set.seed(1125)
+
+final_rf_model_sf <- randomForest(
+  formula,
+  data = train_data_sf,
+  ntree = 18,  # Best ntree
+  mtry = 2     # Best mtry
+)
+
+# Make predictions on the test set
+rf_predictions_sf <- predict(final_rf_model_sf, newdata = test_data_sf)
+
+# Calculate RMSE, MAE, MAPE, and R-squared on the test set
+rf_rmse_sf <- sqrt(mean((rf_predictions_sf - test_data_sf$total_injuries_deaths)^2))
+rf_mae_sf <- mean(abs(rf_predictions_sf - test_data_sf$total_injuries_deaths))
+rf_mape_sf <- mean(abs(rf_predictions_sf - test_data_sf$total_injuries_deaths) / test_data_sf$total_injuries_deaths)
+rf_r_squared_sf <- 1 - sum((test_data_sf$total_injuries_deaths - rf_predictions_sf)^2) / sum((test_data_sf$total_injuries_deaths - mean(test_data_sf$total_injuries_deaths))^2)
+
+# Add the model evaluation metrics to the evaluation_metrics data frame
+evaluation_metrics_sf$RandomForest <- c(rf_rmse_sf, rf_mae_sf, rf_mape_sf, rf_r_squared_sf)
+
+# Print the updated evaluation metrics
+print(evaluation_metrics_sf)
+```
+
+```{r}
+# XGBoost Model
+# Define the formula and dataset
+#formula <- total_injuries_deaths ~ predicted_logistic + cumulative_bike_lane + mv_traffic
+formula <- total_injuries_deaths ~ predicted_log + cumulative_bike_lane + mv_traffic
+data <- train_data_sf
+
+# Convert the data to a matrix
+train_matrix <- as.matrix(data[, -which(names(data) == "total_injuries_deaths")])
+
+# Define the XGBoost parameters
+params <- list(
+  objective = "reg:squarederror",  # Regression task
+  eval_metric = "rmse"              # Evaluation metric
+)
+
+# Train the XGBoost model
+xgb_model_sf <- xgboost(data = train_matrix, label = data$total_injuries_deaths, nrounds = 100, params = params)
+
+# Make predictions on the test set
+test_matrix <- as.matrix(test_data_sf[, -which(names(test_data_sf) == "total_injuries_deaths")])
+
+xgb_predictions_sf <- predict(xgb_model_sf, test_matrix)
+
+# Calculate RMSE, MAE, MAPE, and R-squared on the test set
+xgb_rmse_sf <- sqrt(mean((xgb_predictions_sf - test_data_sf$total_injuries_deaths)^2))
+xgb_mae_sf <- mean(abs(xgb_predictions_sf - test_data_sf$total_injuries_deaths))
+xgb_mape_sf <- mean(abs(xgb_predictions_sf - test_data_sf$total_injuries_deaths) / test_data_sf$total_injuries_deaths)
+xgb_r_squared_sf <- 1 - sum((test_data_sf$total_injuries_deaths - xgb_predictions_sf)^2) / sum((test_data_sf$total_injuries_deaths - mean(test_data_sf$total_injuries_deaths))^2)
+
+# Add the XGboost metrics to the evaluations metrics dataframe
+evaluation_metrics_sf$XGBoost <- c(xgb_rmse_sf, xgb_mae_sf, xgb_mape_sf, xgb_r_squared_sf)
+
+# Print the updated evaluation metrics
+print(evaluation_metrics_sf)
+```
+
+```{r}
+# Recreate the SVM model for the scaled sf data with an RBF kernel
+# Scale the selected_data_sf dataset for SVM
+scaled_data_sf <- scale(selected_data_sf)
+
+# Convert the scaled data to a data frame
+scaled_data_sf <- as.data.frame(scaled_data_sf)
+
+# Split the scaled data into training and testing sets
+set.seed(1125)
+train_indices_sf <- createDataPartition(selected_data_sf$total_injuries_deaths, p = 0.8, list = FALSE)
+train_data_scaled_sf <- scaled_data_sf[train_indices_sf, ]
+test_data_scaled_sf <- scaled_data_sf[-train_indices_sf, ]
+
+# Define the control for the inner loop (hyperparameter tuning)
+inner_control <- trainControl(
+  method = "cv",                  # Cross-validation for inner loop
+  number = 5,                     # 5-fold cross-validation for hyperparameter tuning
+  search = "grid"                 # Use grid search for hyperparameter tuning
+)
+
+# Define the control for the outer loop (performance evaluation)
+outer_control <- trainControl(
+  method = "cv",                  # Cross-validation for outer loop
+  number = 5,                     # 5-fold cross-validation for model evaluation
+  savePredictions = "final",      # Save the final predictions
+  index = createFolds(data$total_injuries_deaths, k = 5)  # Outer cross-validation splits
+)
+
+# Define the hyperparameter grids for each kernel
+tune_grids <- list(
+  rbf = expand.grid(.sigma = seq(0.01, 1, by = 0.01), .C = seq(0.1, 10, by = 0.1))
+)
+
+# Loop over the kernels
+kernels <- c("svmRadial")
+results <- list()
+
+for (kernel in kernels) {
+  message("Training SVM with kernel: ", kernel)
+  
+  # Get the appropriate tuning grid
+  if (kernel == "svmRadial") {
+    tune_grid <- tune_grids$rbf
+  } else if (kernel == "svmPoly") {
+    tune_grid <- tune_grids$poly
+  } else if (kernel == "svmSigmoid") {
+    tune_grid <- tune_grids$sigmoid
+  }
+  
+  # Train the model using cross-validation
+  model <- train(
+    formula,                      # Formula
+    data = data,                  # Dataset
+    method = kernel,              # Kernel-specific method
+    trControl = outer_control,    # Outer cross-validation control
+    tuneGrid = tune_grid,         # Kernel-specific hyperparameter grid
+    metric = "RMSE"               # Evaluation metric
+  )
+  
+  # Store results
+  results[[kernel]] <- model
+}
+
+# Summarize results for each kernel
+for (kernel in kernels) {
+  message("\nSummary for kernel: ", kernel)
+  print(results[[kernel]])
+}
+
+# Function to extract and print the lowest 50 RMSE values
+print_top_50_rmse <- function(results) {
+  for (kernel in names(results)) {
+    message("\nTop 50 results for kernel: ", kernel)
+    
+    # Extract the results
+    res <- results[[kernel]]$results
+    
+    # Sort by RMSE and get the top 20
+    top_50 <- res[order(res$RMSE), ][1:50, ]
+    
+    # Print the top 20
+    print(top_50)
+  }
+}
+
+# Assuming 'results' is your list of trained models
+print_top_50_rmse(results)
+```
+
+```{r}
+# Use the best hyperparameters found for the SVM model, RBF kernel, sigma of 0.36, and C of 2.3
+# Train the final SVM model with the best hyperparameters
+rbf_svm_sf <- svm(
+  formula,
+  data = train_data_scaled_sf,
+  kernel = "radial",
+  cost = 2.3,
+  gamma = 0.36
+)
+
+# Make predictions on the test set
+svm_predictions_sf <- predict(rbf_svm_sf, newdata = test_data_scaled_sf)
+
+# Calculate RMSE, MAE, MAPE, and R-squared on the test set
+svm_rmse_sf <- sqrt(mean((svm_predictions_sf - test_data_scaled_sf$total_injuries_deaths)^2))
+svm_mae_sf <- mean(abs(svm_predictions_sf - test_data_scaled_sf$total_injuries_deaths))
+svm_mape_sf <- mean(abs(svm_predictions_sf - test_data_scaled_sf$total_injuries_deaths) / test_data_scaled_sf$total_injuries_deaths)
+svm_r_squared_sf <- 1 - sum((test_data_scaled_sf$total_injuries_deaths - svm_predictions_sf)^2) / sum((test_data_scaled_sf$total_injuries_deaths - mean(test_data_scaled_sf$total_injuries_deaths))^2)
+
+# Calculate baseline RMSE, MAE, MAPE, and R-squared for the scaled sf data
+baseline_rmse_scaled_sf <- sd(test_data_scaled_sf$total_injuries_deaths)
+baseline_mae_scaled_sf <- mean(abs(test_data_scaled_sf$total_injuries_deaths - mean(test_data_scaled_sf$total_injuries_deaths)))
+baseline_mape_scaled_sf <- mean(abs(test_data_scaled_sf$total_injuries_deaths - mean(test_data_scaled_sf$total_injuries_deaths)) / test_data_scaled_sf$total_injuries_deaths)
+baseline_r_squared_scaled_sf <- 1 - sum((test_data_scaled_sf$total_injuries_deaths - mean(test_data_scaled_sf$total_injuries_deaths))^2) / sum((test_data_scaled_sf$total_injuries_deaths - mean(test_data_scaled_sf$total_injuries_deaths))^2)
+
+# Create a dataframe for the SF scaled data evaluation metrics
+scaled_evaluation_metrics_sf <- data.frame(
+  Metric = c("RMSE", "MAE", "MAPE", "R-squared"),
+  SVM_RBF = c(svm_rmse_sf, svm_mae_sf, svm_mape_sf, svm_r_squared_sf),
+  Baseline = c(baseline_rmse_scaled_sf, baseline_mae_scaled_sf, baseline_mape_scaled_sf, baseline_r_squared_scaled_sf)
+)
+
+# Print the evaluation metrics
+print(scaled_evaluation_metrics_sf)
+```
+
+```{r}
+# Rebuild the XGBoost model on the scaled sf data using the same hyperparameters found before
+# Train the final XGBoost model with the best hyperparameters
+params <- list(
+  objective = "reg:squarederror",  # Regression task
+  eval_metric = "rmse"              # Evaluation metric
+)
+
+train_matrix_sf <- as.matrix(train_data_scaled_sf[, -which(names(train_data_scaled_sf) == "total_injuries_deaths")])
+xgb_model_sf_scaled <- xgboost(data = train_matrix_sf, label = train_data_scaled_sf$total_injuries_deaths, nrounds = 100, params = params)
+
+# Make predictions on the test set
+test_matrix_sf <- as.matrix(test_data_scaled_sf[, -which(names(test_data_scaled_sf) == "total_injuries_deaths")])
+xgb_predictions_sf <- predict(xgb_model_sf_scaled, test_matrix_sf)
+
+# Calculate RMSE, MAE, MAPE, and R-squared on the test set
+xgb_rmse_sf_scaled <- sqrt(mean((xgb_predictions_sf - test_data_scaled_sf$total_injuries_deaths)^2))
+xgb_mae_sf_scaled <- mean(abs(xgb_predictions_sf - test_data_scaled_sf$total_injuries_deaths))
+xgb_mape_sf_scaled <- mean(abs(xgb_predictions_sf - test_data_scaled_sf$total_injuries_deaths) / test_data_scaled_sf$total_injuries_deaths)
+xgb_r_squared_sf_scaled <- 1 - sum((test_data_scaled_sf$total_injuries_deaths - xgb_predictions_sf)^2) / sum((test_data_scaled_sf$total_injuries_deaths - mean(test_data_scaled_sf$total_injuries_deaths))^2)
+
+# Add the model evaluation metrics to the scaled_evaluation_metrics_sf data frame
+scaled_evaluation_metrics_sf$XGBoost <- c(xgb_rmse_sf_scaled, xgb_mae_sf_scaled, xgb_mape_sf_scaled, xgb_r_squared_sf_scaled)
+
+# Print the updated evaluation metrics
+print(scaled_evaluation_metrics_sf)
+```
+
+```{r}
+# Rebuild the decision tree and random forest models on the scaled sf data using the same hyperparameters found before and add them to the scaled_evaluation_metrics_sf data frame
+# Decision Tree Model
+# Train the final decision tree model with the best cp and maxdepth
+final_dt_model_sf <- rpart(
+  formula,
+  data = train_data_scaled_sf,
+  control = rpart.control(
+    cp = 0.09,  # Best cp
+    maxdepth = 4   # Best maxdepth
+  )
+)
+
+# Train the final random forest model with the best ntree and mtry
+final_rf_model_sf <- randomForest(
+  formula,
+  data = train_data_scaled_sf,
+  ntree = 18,  # Best ntree
+  mtry = 2     # Best mtry
+)
+
+# Train the final XGBoost model with the best hyperparameters
+params <- list(
+  objective = "reg:squarederror",  # Regression task
+  eval_metric = "rmse"              # Evaluation metric
+)
+
+train_matrix_sf <- as.matrix(train_data_scaled_sf[, -which(names(train_data_scaled_sf) == "total_injuries_deaths")])
+xgb_model_sf <- xgboost(data = train_matrix_sf, label = train_data_scaled_sf$total_injuries_deaths, nrounds = 100, params = params)
+
+# Make predictions on the test set
+test_matrix_sf <- as.matrix(test_data_scaled_sf[, -which(names(test_data_scaled_sf) == "total_injuries_deaths")])
+xgb_predictions_sf <- predict(xgb_model_sf, test_matrix_sf)
+dt_predictions_sf <- predict(final_dt_model_sf, newdata = test_data_scaled_sf)
+rf_predictions_sf <- predict(final_rf_model_sf, newdata = test_data_scaled_sf)
+
+# Calculate RMSE, MAE, MAPE, and R-squared on the test set
+xgb_rmse_sf <- sqrt(mean((xgb_predictions_sf - test_data_scaled_sf$total_injuries_deaths)^2))
+dt_rmse_sf <- sqrt(mean((dt_predictions_sf - test_data_scaled_sf$total_injuries_deaths)^2))
+rf_rmse_sf <- sqrt(mean((rf_predictions_sf - test_data_scaled_sf$total_injuries_deaths)^2))
+
+xgb_mae_sf <- mean(abs(xgb_predictions_sf - test_data_scaled_sf$total_injuries_deaths))
+dt_mae_sf <- mean(abs(dt_predictions_sf - test_data_scaled_sf$total_injuries_deaths))
+rf_mae_sf <- mean(abs(rf_predictions_sf - test_data_scaled_sf$total_injuries_deaths))
+
+xgb_mape_sf <- mean(abs(xgb_predictions_sf - test_data_scaled_sf$total_injuries_deaths) / test_data_scaled_sf$total_injuries_deaths)
+dt_mape_sf <- mean(abs(dt_predictions_sf - test_data_scaled_sf$total_injuries_deaths) / test_data_scaled_sf$total_injuries_deaths)
+rf_mape_sf <- mean(abs(rf_predictions_sf - test_data_scaled_sf$total_injuries_deaths) / test_data_scaled_sf$total_injuries_deaths)
+
+xgb_r_squared_sf <- 1 - sum((test_data_scaled_sf$total_injuries_deaths - xgb_predictions_sf)^2) / sum((test_data_scaled_sf$total_injuries_deaths - mean(test_data_scaled_sf$total_injuries_deaths))^2)
+dt_r_squared_sf <- 1 - sum((test_data_scaled_sf$total_injuries_deaths - dt_predictions_sf)^2) / sum((test_data_scaled_sf$total_injuries_deaths - mean(test_data_scaled_sf$total_injuries_deaths))^2)
+rf_r_squared_sf <- 1 - sum((test_data_scaled_sf$total_injuries_deaths - rf_predictions_sf)^2) / sum((test_data_scaled_sf$total_injuries_deaths - mean(test_data_scaled_sf$total_injuries_deaths))^2)
+
+# Add the model evaluation metrics to the scaled_evaluation_metrics_sf data frame
+scaled_evaluation_metrics_sf$DecisionTree <- c(dt_rmse_sf, dt_mae_sf, dt_mape_sf, dt_r_squared_sf)
+scaled_evaluation_metrics_sf$RandomForest <- c(rf_rmse_sf, rf_mae_sf, rf_mape_sf, rf_r_squared_sf)
+scaled_evaluation_metrics_sf$XGBoost <- c(xgb_rmse_sf, xgb_mae_sf, xgb_mape_sf, xgb_r_squared_sf)
+
+# Print the updated evaluation metrics
+print(scaled_evaluation_metrics_sf)
+```
+
+
+```{r}
+# Print the actual Decision Tree model of both NYC and SF
+print(dt_model_ny)
+print(final_dt_model_sf)
+
+# Print the actual Random Forest model of both NYC and SF
+print(rf_model_ny)
+print(final_rf_model_sf)
+
+# Print the actual XGBoost model of both NYC and SF
+print(xgb_model_ny)
+print(xgb_model_sf)
+
+# Print the variable importance of the Random Forest model for both NYC and SF
+rf_model_ny$importance
+final_rf_model_sf$importance
+
+# Print the variable importance of the XGBoost model for both NYC and SF
+xgb_importance_ny <- xgb.importance(model = xgb_model_ny)
+xgb_importance_sf <- xgb.importance(model = xgb_model_sf_scaled)
+xgb_importance_ny
+xgb_importance_sf
+```
+
+---
+
+# Generate some visualizations
+1- Table of the evaluation metrics for the models (Scaled and Unscaled NYC Data)
+2- Bar Chart of the feature importance for the Random Forest model (NYC Data)
+3- Bar Chart of the feature importance for the XGBoost model (NYC Data)
+4- Correlation Heatmap of the selected features for the NYC Data
+
+
+5- Table of the evaluation metrics for the models (Scaled SF Data)
+6- Bar Chart of the feature importance for the Random Forest model (SF Data)
+7- Bar Chart of the feature importance for the XGBoost model (SF Data)
+8- Correlation Heatmap of the selected features for the SF Data
+
+```{r}
+# Load necessary libraries
+library(ggplot2)
+library(reshape2)
+library(gridExtra)
+library(gt)
+library(corrplot)
+library(ggcorrplot)
+```
+
+```{r}
+# Make copies of the data frames for visualization
+nyc_evaluation_metrics_copy <- nyc_evaluation_metrics
+nyc_scaled_evaluation_metrics_copy <- nyc_scaled_evaluation_metrics
+```
+
+```{r}
+nyc_evaluation_metrics <- nyc_evaluation_metrics_copy
+nyc_scaled_evaluation_metrics <- nyc_scaled_evaluation_metrics_copy
+```
+```{r}
+# Create a table of the evaluation metrics for the models (Scaled and Unscaled NYC Data)
+# NYC Data
+nyc_evaluation_metrics <- nyc_evaluation_metrics |>
+  mutate(Model = c("Decision Tree", "Random Forest", "XGBoost")) |>
+  select(Model, everything())
+
+# Move baseline from column 3 ro 1
+nyc_scaled_evaluation_metrics <- nyc_scaled_evaluation_metrics[, c(1, 3, 2, 4, 5, 6, 7)]
+```
+
+```{r}
+library(gt)
+
+lowest_rmse_column <- colnames(nyc_evaluation_metrics)[which.min(nyc_evaluation_metrics[nyc_evaluation_metrics$Metric == "RMSE", -1]) + 1]
+
+gt_nyc <- nyc_evaluation_metrics %>% 
+  gt() %>% 
+  # Highlight the column with the lowest RMSE value
+  tab_style(
+    style = cell_fill(color = "lightgreen"),
+    locations = cells_body(columns = vars(!!lowest_rmse_column))
+  ) %>%
+  # Add grid lines to the table
+  tab_style(
+    style = cell_borders(
+      sides = c("top", "bottom", "left", "right"),
+      weight = 1,  # Border thickness
+      color = "black"  # Border color
+    ),
+    locations = cells_body()
+  )
+
+# Print the table
+gt_nyc
+```
+
+```{r}
+# Move Baseline from Column 3 to 2
+nyc_scaled_evaluation_metrics <- nyc_scaled_evaluation_metrics[, c(1, 3, 2, 4, 5, 6, 7)]
+
+# Find the column with the lowest RMSE value
+lowest_rmse_column <- colnames(nyc_scaled_evaluation_metrics)[which.min(nyc_scaled_evaluation_metrics[nyc_scaled_evaluation_metrics$Metric == "RMSE", -1]) + 1]
+
+gt_nyc_scaled <- nyc_scaled_evaluation_metrics %>% 
+  gt() %>% 
+  # Highlight the column with the lowest RMSE value
+  tab_style(
+    style = cell_fill(color = "lightgreen"),
+    locations = cells_body(columns = vars(!!lowest_rmse_column))
+  ) %>%
+  # Add grid lines to the table
+  tab_style(
+    style = cell_borders(
+      sides = c("top", "bottom", "left", "right"),
+      weight = 1,  # Border thickness
+      color = "black"  # Border color
+    ),
+    locations = cells_body()
+  )
+
+# Print the table
+gt_nyc_scaled
+```
+
+```{r}
+# Create the data frame with the correct importance metric
+rf_importance_ny <- data.frame(
+  Feature = rownames(rf_model_ny$importance),
+  Importance = rf_model_ny$importance[, "IncNodePurity"]  # Use IncNodePurity
+)
+
+# Sort the data frame by importance
+rf_importance_ny <- rf_importance_ny[order(rf_importance_ny$Importance, decreasing = TRUE), ]
+
+
+# Create the bar chart with larger and bolder labels
+rf_bar_ny <- ggplot(rf_importance_ny, aes(x = reorder(Feature, Importance), y = Importance)) +
+  geom_bar(stat = "identity", fill = "skyblue") +
+  coord_flip() +
+  labs(title = "Feature Importance for Random Forest Model (NYC Data)",
+       x = "Feature",
+       y = "Importance") +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 20, face = "bold"),      # Title size and bold
+    axis.title.x = element_text(size = 16, face = "bold"),    # X-axis title size and bold
+    axis.title.y = element_text(size = 16, face = "bold"),    # Y-axis title size and bold
+    axis.text.x = element_text(size = 14, face = "bold"),     # X-axis text size and bold
+    axis.text.y = element_text(size = 14, face = "bold")      # Y-axis text size and bold
+  )
+
+# Print the bar chart
+print(rf_bar_ny)
+```
+
+```{r}
+# Create a bar plot for feature importance, sorted by Gain
+ggplot(xgb_importance_ny, aes(x = reorder(Feature, Gain), y = Gain)) +
+  geom_bar(stat = "identity", fill = "skyblue") +
+  coord_flip() +
+  labs(title = "Feature Importance from XGBoost Model",
+       x = "Feature",
+       y = "Gain") +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 20, face = "bold"),      # Title size and bold
+    axis.title.x = element_text(size = 16, face = "bold"),    # X-axis title size and bold
+    axis.title.y = element_text(size = 16, face = "bold"),    # Y-axis title size and bold
+    axis.text.x = element_text(size = 14, face = "bold"),     # X-axis text size and bold
+    axis.text.y = element_text(size = 14, face = "bold")      # Y-axis text size and bold
+  )  
+```
+
+```{r}
+# Make sure the data is numeric
+nyc_data_copy <- nyc_data |>
+  mutate_if(is.character, as.numeric)
+
+# Calculate the correlation matrix
+correlation_matrix_ny <- cor(nyc_data_copy)
+
+# Create a correlation heatmap
+# Ensure you have the corrplot package installed and loaded
+
+# Generate the correlation plot with larger and bolder labels
+corrplot(correlation_matrix_ny, 
+         method = "color", 
+         type = "upper", 
+         tl.col = "black", 
+         tl.srt = 90,
+         tl.cex = 2.,    # Increase text size
+         tl.font = 2)     # Make text bold
+```
+
+```{r}
+# print the scaled decision tree model
+print(final_dt_model)
+```
+
+# SF Data
+
+```{r}
+# Make copies of the data frames for visualization
+evaluation_metrics_sf_copy <- evaluation_metrics_sf
+scaled_evaluation_metrics_sf_copy <- scaled_evaluation_metrics_sf
+```
+
+```{r}
+sf_evaluation_metrics <- evaluation_metrics_sf_copy
+sf_scaled_evaluation_metrics <- scaled_evaluation_metrics_sf_copy
+```
+
+```{r}
+# Create a table of the evaluation metrics for the models (Scaled and Unscaled SF Data)
+
+sf_evaluation_metrics <- evaluation_metrics_sf |>
+  mutate(Model = c("Decision Tree", "Random Forest", "XGBoost")) |>
+  select(Model, everything())
+
+# Move baseline from column 3 ro 1
+#scaled_evaluation_metrics_sf <- scaled_evaluation_metrics_sf[, c(1, 3, 2, 4, 5)]
+
+scaled_evaluation_metrics_sf <- scaled_evaluation_metrics_sf |>
+  mutate(Model = c("Decision Tree", "Random Forest", "XGBoost")) |>
+  select(Model, everything())
+
+lowest_rmse_column <- colnames(evaluation_metrics_sf)[which.min(evaluation_metrics_sf[evaluation_metrics_sf$Metric == "RMSE", -1]) + 1]
+
+# Print the table
+gt_sf <- sf_evaluation_metrics %>% 
+  gt() %>% 
+  # Highlight the column with the lowest RMSE value
+  tab_style(
+    style = cell_fill(color = "lightgreen"),
+    locations = cells_body(columns = vars(!!lowest_rmse_column))
+  ) %>%
+  # Add grid lines to the table
+  tab_style(
+    style = cell_borders(
+      sides = c("top", "bottom", "left", "right"),
+      weight = 1,  # Border thickness
+      color = "black"  # Border color
+    ),
+    locations = cells_body()
+  )
+
+# Print the table
+gt_sf
+```
+
+```{r}
+# Find the column with the lowest RMSE value
+lowest_rmse_column <- colnames(scaled_evaluation_metrics_sf)[which.min(scaled_evaluation_metrics_sf[scaled_evaluation_metrics_sf$Metric == "RMSE", -1]) + 1]
+
+gt_sf_scaled <- scaled_evaluation_metrics_sf %>% 
+  gt() %>% 
+  # Highlight the column with the lowest RMSE value
+  tab_style(
+    style = cell_fill(color = "lightgreen"),
+    locations = cells_body(columns = vars(!!lowest_rmse_column))
+  ) %>%
+  # Add grid lines to the table
+  tab_style(
+    style = cell_borders(
+      sides = c("top", "bottom", "left", "right"),
+      weight = 1,  # Border thickness
+      color = "black"  # Border color
+    ),
+    locations = cells_body()
+  )
+
+# Print the table
+gt_sf_scaled
+```
+
+```{r}
+# Create the data frame with the correct importance metric
+rf_importance_sf <- data.frame(
+  Feature = rownames(final_rf_model_sf$importance),
+  Importance = final_rf_model_sf$importance[, "IncNodePurity"]  # Use IncNodePurity
+)
+
+# Sort the data frame by importance
+rf_importance_sf <- rf_importance_sf[order(rf_importance_sf$Importance, decreasing = TRUE), ]
+
+# Create the bar chart for feature importance
+rf_bar_sf <- ggplot(rf_importance_sf, aes(x = reorder(Feature, Importance), y = Importance)) +
+  geom_bar(stat = "identity", fill = "skyblue") +
+  coord_flip() +
+  labs(title = "Feature Importance for Random Forest Model (SF Data)",
+       x = "Feature",
+       y = "Importance") +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 20, face = "bold"),      # Title size and bold
+    axis.title.x = element_text(size = 16, face = "bold"),    # X-axis title size and bold
+    axis.title.y = element_text(size = 16, face = "bold"),    # Y-axis title size and bold
+    axis.text.x = element_text(size = 14, face = "bold"),     # X-axis text size and bold
+    axis.text.y = element_text(size = 14, face = "bold")      # Y-axis text size and bold
+  )  
+
+# Print the bar chart
+print(rf_bar_sf)
+```
+
+```{r}
+# Create a bar plot for feature importance, sorted by Gain
+ggplot(xgb_importance_sf, aes(x = reorder(Feature, Gain), y = Gain)) +
+  geom_bar(stat = "identity", fill = "skyblue") +
+  coord_flip() +
+  labs(title = "Feature Importance from XGBoost Model",
+       x = "Feature",
+       y = "Gain") +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 20, face = "bold"),      # Title size and bold
+    axis.title.x = element_text(size = 16, face = "bold"),    # X-axis title size and bold
+    axis.title.y = element_text(size = 16, face = "bold"),    # Y-axis title size and bold
+    axis.text.x = element_text(size = 14, face = "bold"),     # X-axis text size and bold
+    axis.text.y = element_text(size = 14, face = "bold")      # Y-axis text size and bold
+  )  
+```
+
+```{r}
+# Make sure the data is numeric
+sf_data_copy <- selected_data_sf |>
+  mutate_if(is.character, as.numeric)
+
+# Calculate the correlation matrix
+correlation_matrix_sf <- cor(sf_data_copy)
+
+# Create a correlation heatmap
+corrplot(correlation_matrix_sf,
+         method = "color", 
+         type = "upper", 
+         tl.col = "black", 
+         tl.srt = 90,
+         tl.cex = 2.,    # Increase text size
+         tl.font = 2)     # Make text bold
+```
+
+```{r}
+# Scatterplot of cumulative_bike_lane vs bike to car ratio from NYC data`
+ggplot(nyc_data, aes(x = cumulative_bike_lane, y = bike_to_car_ratio)) +
+  geom_point() +
+  labs(title = "Scatterplot of Cumulative Bike Lane vs. Bike to Car Ratio (NYC Data)",
+       x = "Cumulative Bike Lane",
+       y = "Bike to Car Ratio") +
+  theme_minimal()
+```
+
+```{r}
+# Print the SF scaled decision tree model
+print(final_dt_model_sf)
+
+# Plot the decision tree with larger and bolder text
+rpart.plot(final_dt_model_sf, 
+           extra = 101, 
+           under = TRUE,
+           cex = 1.2,        # Increase text size
+           faclen = 0,
+           col = "black"     # Ensure text is dark and visible
+)
+
+```
+

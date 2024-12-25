@@ -1,0 +1,108 @@
+---
+output: reprex::reprex_document
+knit: reprex::reprex_render
+---
+
+```{r}
+# Load necessary libraries
+library(dplyr)
+library(data.table)
+library(stringr)
+
+# Define the directory path
+dir_path_citi_bike <- "C:/Users/shaya/OneDrive/Documents/repos/Data698/temp/Divvy-months"
+
+# Get the list of file names
+file_names <- list.files(path = dir_path_citi_bike, full.names = TRUE)
+
+# Function to convert the file name to the final result
+convert_to_month_year <- function(file_path) {
+  # Extract the relevant part of the filename
+  file_name <- gsub(".*/|[^0-9_Q]", "", file_path)
+  
+  # Handle standard YYYYMM format
+  if (grepl("^\\d{6}$", file_name)) {
+    return(paste0(substr(file_name, 1, 4), "-", substr(file_name, 5, 6)))
+  }
+
+  # Handle specific cases for quarters with detailed month splits
+  if (file_name == "__2014Q307") return("2014-07")
+  if (file_name == "__2014Q30809") return("2014-08_09")
+  
+  # Handle quarters (YYYYQn or YYYY_Qn)
+  if (grepl("Q", file_name)) {
+    year <- substr(file_name, 3, 6)
+    quarter <- gsub("\\D", "", substr(file_name, 7, 9))
+    
+    if (quarter == "1") {
+      return(paste0(year, "-01_02_03"))
+    } else if (quarter == "2") {
+      return(paste0(year, "-04_05_06"))
+    } else if (quarter == "3") {
+      return(paste0(year, "-07_08_09"))
+    } else if (quarter == "4") {
+      return(paste0(year, "-10_11_12"))
+    }
+  }
+
+  # Handle non-standard formats by manually mapping
+  manual_mapping <- list(
+    "__2013" = "2013",
+    "__2014Q4" = "2014-10_11_12",
+    "__2014_Q1Q2" = "2014-01_02_03",
+    "__2015Q1" = "2015-01_02_03",
+    "__2015Q2" = "2015-04_05_06",
+    "__2015_07" = "2015-07",
+    "__2015_08" = "2015-08",
+    "__2015_09" = "2015-09",
+    "__2015_Q4" = "2015-10_11_12",
+    "__2016_04" = "2016-04",
+    "__2016_05" = "2016-05",
+    "__2016_06" = "2016-06",
+    "__2016_Q1" = "2016-01_02_03",
+    "__2016_Q3" = "2016-07_08_09",
+    "__2016_Q4" = "2016-10_11_12",
+    "__2017_Q1" = "2017-01_02_03",
+    "__2017_Q2" = "2017-04_05_06",
+    "__2017_Q3" = "2017-07_08_09",
+    "__2017_Q4" = "2017-10_11_12",
+    "__2018_Q1" = "2018-01_02_03",
+    "__2018_Q2" = "2018-04_05_06",
+    "__2018_Q3" = "2018-07_08_09",
+    "__2018_Q4" = "2018-10_11_12",
+    "__2019_Q1" = "2019-01_02_03",
+    "__2019_Q2" = "2019-04_05_06",
+    "__2019_Q3" = "2019-07_08_09",
+    "__2019_Q4" = "2019-10_11_12",
+    "__2020_Q1" = "2020-01_02_03"
+  )
+  
+  # Ensure we safely access the list
+  if (file_name %in% names(manual_mapping)) {
+    return(manual_mapping[[file_name]])
+  } else {
+    cat("Unmatched file_name:", file_name, "\n")
+    return(file_name)
+  }
+}
+
+# Function to rename a file based on the new date format
+rename_file <- function(file_path) {
+  new_file_name <- convert_to_month_year(file_path)  # Convert to a standard format
+  
+  # If the conversion returns a valid new name, rename the file
+  if (!is.null(new_file_name)) {
+    new_path <- file.path(dirname(file_path), paste0(new_file_name, ".csv"))  # Construct new file path
+    file.rename(file_path, new_path)  # Rename the file
+    cat("Renamed:", basename(file_path), "->", new_file_name, "\n")
+  } else {
+    cat("Skipping renaming for:", basename(file_path), "as it doesn't match expected patterns.\n")
+  }
+}
+
+# Apply the rename function to each file
+lapply(file_names, rename_file)
+
+# Print completion message
+cat("File renaming process completed!\n")
+```
